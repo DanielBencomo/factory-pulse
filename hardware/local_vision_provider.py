@@ -538,6 +538,7 @@ class EventPublisher:
             try:
                 if now >= next_heartbeat:
                     self._post_heartbeat(session)
+                    self.last_ok_at = time.time()
                     next_heartbeat = now + 10.0
                     # Si el proveedor arrancó antes que FastAPI, el primer intento
                     # de cambiar a En vivo falló. Se reintenta tras el primer latido.

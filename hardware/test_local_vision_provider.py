@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hardware.local_vision_provider import (
+    EventPublisher,
     VideoSource,
     YoloByteTracker,
     build_parser,
@@ -13,6 +14,19 @@ from hardware.local_vision_provider import (
 
 
 class VisionProviderHelpersTest(unittest.TestCase):
+    def test_successful_heartbeat_marks_backend_available_without_people(self):
+        publisher = EventPublisher("http://127.0.0.1:8000", "camera-test")
+
+        def heartbeat(_session):
+            publisher._stop.set()
+
+        with patch.object(publisher, "_configure_mode", return_value=True):
+            with patch.object(publisher, "_post_heartbeat", side_effect=heartbeat):
+                with patch("hardware.local_vision_provider.requests.Session", return_value=object()):
+                    publisher._run()
+
+        self.assertIsNotNone(publisher.last_ok_at)
+
     def test_live_source_retries_when_unavailable_at_startup(self):
         with patch.object(VideoSource, "open", side_effect=[RuntimeError("offline"), None]) as opened:
             with patch("hardware.local_vision_provider.time.sleep") as sleep:

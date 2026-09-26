@@ -119,7 +119,7 @@ npm run dev
 cd backend
 pytest -v
 ```
-**Resultado verificado:** 11 de 11 tests aprobados (cálculo de paros solapados, conservación de universo temporal, deduplicación de eventos, reglas de alerta, OEE parcial, privacidad en sanitarios).
+Las pruebas usan su propia base (`test_factory_pulse.db`) y no tocan el layout ni los datos reales. Cubren cálculo de paros solapados, deduplicación de eventos, reglas de alerta, privacidad en sanitarios, layout editable, interior por área, registro y conexión de dispositivos, y la reconstrucción de estados de la analítica.
 
 ```powershell
 # Validar compilación de tipos y build de producción del Frontend:
@@ -130,6 +130,34 @@ npm run build
 ---
 
 ## 🔌 Cómo Conectar un ESP32 o Enviar Telemetría
+
+### Flujo recomendado (la app espera la conexión)
+1. Arranca el backend escuchando en la red: `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+   Con `START_MODE=live` arranca sin simulador, solo con datos reales.
+2. En la app, **Dispositivos → Registrar dispositivo**. Queda en *esperando conexión* y muestra la
+   dirección del servidor y el bloque de configuración para el firmware.
+3. Copia ese bloque en `hardware/esp32_firmware.ino`, activa los módulos que tenga el nodo
+   (`ENABLE_RFID`, `ENABLE_BUTTONS`, `ENABLE_PIR`, `ENABLE_CYCLE`) y carga el firmware.
+4. Al primer latido (`POST /api/devices/<ID>/heartbeat`, cada 10 s) pasa a *conectado*. Sin latido en
+   30 s (`DEVICE_TIMEOUT_SECONDS`) pasa a *sin señal*. Un ID no registrado aparece como *detectado sin registrar*.
+5. En **Planta → (estación) → Editar interior**, coloca el sensor y vincúlalo al dispositivo.
+
+Para probar sin hardware, la app muestra un `curl` por dispositivo que simula su latido.
+
+### Firmware y servicios incluidos
+| Archivo | Qué hace |
+|---|---|
+| `hardware/esp32_firmware.ino` | RC522 (checkpoint RFID → `zone_enter` con `tag_id`), pulsadores de paro / material / **pieza terminada**, PIR y pulso de ciclo |
+| `hardware/esp32_csi_node.ino` | Nodo Wi‑Fi CSI experimental: calibra con la zona vacía y reporta `presence` con `state` = actividad / quietud / sin_presencia y confianza |
+| `hardware/local_vision_provider.py` | Cámara de laptop/USB con OpenCV: detección por fondo, IDs anónimos y calibración de 4 puntos a coordenadas de la nave (`--calibrate`) |
+
+Con dispositivos reales, el **procesador en vivo** del backend difunde las posiciones, deriva el
+estado de cada estación, evalúa las reglas y detecta **discrepancias entre sensores** (RFID sin
+confirmación de cámara, CSI con actividad que la cámara no ve). El pulsador de paro abre un paro
+*pendiente de causa* que el supervisor justifica desde **Paros y alertas**.
+
+**Plan B:** *Herramientas → Grabaciones* guarda los últimos N minutos y los reproduce después en un
+modo aparte (`replay`) que no se mezcla con los datos reales. Guion completo en `docs/GUIA_DEMO.md`.
 
 ### Vía HTTP POST (Mínimo recomendado):
 Envíe un evento JSON al endpoint `POST http://<IP_LAPTOP>:8000/api/events`:

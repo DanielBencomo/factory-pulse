@@ -91,7 +91,8 @@ async def update_calibration(plan_id: str, calib_in: ScaleCalibration, session: 
     if not fp:
         raise HTTPException(status_code=404, detail="Floor plan not found")
 
-    fp.calibration = calib_in.model_dump()
+    # conservar el inicio del marco de coordenadas vigente (ver routes_layout)
+    fp.calibration = {**calib_in.model_dump(), "frame_since": (fp.calibration or {}).get("frame_since")}
     fp.updated_at = datetime.utcnow()
 
     # Log audit

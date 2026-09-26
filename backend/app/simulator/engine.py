@@ -37,6 +37,71 @@ class SimulatorEngine:
             "TRK-OP4": {"x": 0.83, "y": 0.38, "target_station": "st-4", "name": "Operador Empaque", "speed": 0.02, "history": []},
             "TRK-MAT": {"x": 0.22, "y": 0.75, "target_station": "zone-storage", "name": "Carro Materialista", "speed": 0.03, "history": []},
         }
+        # Layout leído de la base en cada tick: los operadores simulados siguen
+        # a las estaciones aunque se edite el plano.
+        self.layout: Dict[str, Any] = {"stations": [], "storage": (0.22, 0.78), "rest": (0.55, 0.80), "lines": []}
+        self._dt: float = 0.0                  # segundos reales desde el tick anterior
+        self._last_tick: Optional[datetime] = None
+        self._cycle_acc: Dict[str, float] = {}
+        self._cycle_next: Dict[str, float] = {}
+        self._cycled: set = set()
+        self._scene_stop_id: Optional[str] = None
+
+    @staticmethod
+    def _center(poly) -> tuple:
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+
+    async def _refresh_layout(self, session: AsyncSession):
+        st_res = await session.execute(select(DBStation).order_by(DBStation.line_id, DBStation.order_in_line))
+        stations = [
+            {"station_id": s.station_id, "line_id": s.line_id, "name": s.name, "x": s.position_x, "y": s.position_y,
+             "ideal": max(5.0, s.ideal_cycle_seconds or 45.0)}
+            for s in st_res.scalars().all()
+        ]
+        zones = (await session.execute(select(DBPolygonZone))).scalars().all()
+        storage = next((self._center(z.polygon) for z in zones if z.type == "storage"), self.layout["storage"])
+        rest = next((self._center(z.polygon) for z in zones if z.type == "rest"), self.layout["rest"])
+        self.layout = {"stations": stations, "storage": storage, "rest": rest,
+                       "lines": sorted({s["line_id"] for s in stations})}
+        self._sync_tracks()
+
+    def _sync_tracks(self):
+        """Un operador simulado por estación (TRK-OP1..n) más el materialista."""
+        wanted = set()
+        for i, st in enumerate(self.layout["stations"]):
+            tid = f"TRK-OP{i + 1}"
+            wanted.add(tid)
+            short = st["name"].split("(")[-1].rstrip(")") if "(" in st["name"] else st["name"]
+            if tid not in self.tracks:
+                self.tracks[tid] = {"x": st["x"], "y": st["y"], "history": [], "speed": 0.02}
+            self.tracks[tid]["target_station"] = st["station_id"]
+            self.tracks[tid]["name"] = f"Operador {short}"
+        for tid in [t for t in self.tracks if t.startswith("TRK-OP") and t not in wanted]:
+            del self.tracks[tid]
+
+    def _station(self, idx: int) -> Optional[Dict[str, Any]]:
+        st = self.layout["stations"]
+        return st[idx] if 0 <= idx < len(st) else None
+
+    def _move(self, trk: str, x: float, y: float):
+        self.tracks[trk]["x"] = round(min(1.0, max(0.0, x)), 4)
+        self.tracks[trk]["y"] = round(min(1.0, max(0.0, y)), 4)
+        self.tracks[trk]["history"].append((self.tracks[trk]["x"], self.tracks[trk]["y"]))
+
+    @staticmethod
+    def _along(points: List[tuple], t: float) -> tuple:
+        """Posición en t∈[0,1) sobre una polilínea recorrida a velocidad constante."""
+        segs = [(points[i], points[i + 1]) for i in range(len(points) - 1)]
+        lens = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in segs]
+        d = t * (sum(lens) or 1.0)
+        for (a, b), seg_len in zip(segs, lens):
+            if d <= seg_len:
+                k = d / seg_len if seg_len else 0
+                return (a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k)
+            d -= seg_len
+        return points[-1]
 
     def start(self, speed: float = 1.0):
         self.speed = speed
@@ -56,12 +121,12 @@ class SimulatorEngine:
         self.sim_time = datetime.utcnow()
         random.seed(self.seed)
 
-        # Reset operator positions
-        self.tracks["TRK-OP1"]["x"], self.tracks["TRK-OP1"]["y"] = 0.17, 0.38
-        self.tracks["TRK-OP2"]["x"], self.tracks["TRK-OP2"]["y"] = 0.39, 0.38
-        self.tracks["TRK-OP3"]["x"], self.tracks["TRK-OP3"]["y"] = 0.61, 0.38
-        self.tracks["TRK-OP4"]["x"], self.tracks["TRK-OP4"]["y"] = 0.83, 0.38
-        self.tracks["TRK-MAT"]["x"], self.tracks["TRK-MAT"]["y"] = 0.22, 0.75
+        # Regresar a cada operador a su estación del layout actual
+        async with AsyncSessionLocal() as layout_session:
+            await self._refresh_layout(layout_session)
+        for i, st in enumerate(self.layout["stations"]):
+            self.tracks[f"TRK-OP{i + 1}"]["x"], self.tracks[f"TRK-OP{i + 1}"]["y"] = st["x"], st["y"]
+        self.tracks["TRK-MAT"]["x"], self.tracks["TRK-MAT"]["y"] = self.layout["storage"]
 
         for k in self.tracks:
             self.tracks[k]["history"] = []
@@ -121,7 +186,15 @@ class SimulatorEngine:
         while self.is_running:
             try:
                 self.tick_count += 1
-                self.sim_time += timedelta(seconds=2)
+                # Reloj real: así paros, alertas y eventos comparten la misma línea de tiempo.
+                now_real = datetime.utcnow()
+                self._dt = min(10.0, (now_real - self._last_tick).total_seconds()) if self._last_tick else 0.0
+                self._last_tick = now_real
+                self.sim_time = now_real
+                self._cycled = set()
+
+                async with AsyncSessionLocal() as layout_session:
+                    await self._refresh_layout(layout_session)
                 
                 # Update tracks & produce scene-specific behaviors
                 events_to_insert = await self._generate_scene_step()
@@ -136,6 +209,9 @@ class SimulatorEngine:
 
                     # Update device heartbeats
                     await self._update_devices_state(session)
+
+                    # Escena 6: paro justificado real (queda en el registro de paros)
+                    await self._sync_scene_stop(session)
 
                     await session.commit()
 
@@ -205,41 +281,40 @@ class SimulatorEngine:
         # Scene 7: Sensor ESP32-04 dropped heartbeat (offline)
         # Scene 8: External event injection
 
-        # 1. Update Positions with realistic movement
-        if self.current_scene == 1:
-            # Subtle natural breathing movement around stations
-            for i, trk in enumerate(["TRK-OP1", "TRK-OP2", "TRK-OP3", "TRK-OP4"]):
-                base_x = 0.17 + (i * 0.22)
-                base_y = 0.38
-                noise_x = math.sin(self.tick_count * 0.3 + i) * 0.015
-                noise_y = math.cos(self.tick_count * 0.2 + i) * 0.015
-                self.tracks[trk]["x"] = round(base_x + noise_x, 4)
-                self.tracks[trk]["y"] = round(base_y + noise_y, 4)
-                self.tracks[trk]["history"].append((self.tracks[trk]["x"], self.tracks[trk]["y"]))
+        # 1. Movimiento según escena, anclado a las estaciones del layout
+        stations = self.layout["stations"]
+        storage = self.layout["storage"]
+        op = lambda i: f"TRK-OP{i + 1}"
 
-            # Materialist moving back and forth between storage and stations
-            mat_t = (self.tick_count % 30) / 30.0
-            if mat_t < 0.5:
-                # Storage to Station 1 & 2
-                self.tracks["TRK-MAT"]["x"] = round(0.20 + (mat_t * 2) * 0.25, 4)
-                self.tracks["TRK-MAT"]["y"] = round(0.75 - (mat_t * 2) * 0.25, 4)
-            else:
-                # Return to storage
-                self.tracks["TRK-MAT"]["x"] = round(0.45 - ((mat_t - 0.5) * 2) * 0.25, 4)
-                self.tracks["TRK-MAT"]["y"] = round(0.50 + ((mat_t - 0.5) * 2) * 0.25, 4)
-            self.tracks["TRK-MAT"]["history"].append((self.tracks["TRK-MAT"]["x"], self.tracks["TRK-MAT"]["y"]))
+        if self.current_scene == 1:
+            for i, st in enumerate(stations):
+                self._move(
+                    op(i),
+                    st["x"] + math.sin(self.tick_count * 0.3 + i) * 0.012,
+                    st["y"] + math.cos(self.tick_count * 0.2 + i) * 0.012,
+                )
+
+            # El operador de la estación 2 lleva WIP a la siguiente de su línea cada 40 ticks
+            s2, s3 = self._station(1), self._station(2)
+            if s2 and s3 and s2["line_id"] == s3["line_id"] and self.tick_count % 40 < 10:
+                x, y = self._along([(s2["x"], s2["y"]), (s3["x"], s3["y"]), (s2["x"], s2["y"])], (self.tick_count % 40) / 10)
+                self.tracks[op(1)]["history"].pop()
+                self._move(op(1), x, y)
+
+            # Materialista: almacén → estación 1 → estación 2 → almacén
+            route = [storage] + [(st["x"], st["y"] + 0.04) for st in stations[:2]] + [storage]
+            x, y = self._along(route, (self.tick_count % 30) / 30.0) if len(route) > 2 else storage
+            self._move("TRK-MAT", x, y)
 
         elif self.current_scene == 2:
-            # Station 2 present but machine stopped
-            self.tracks["TRK-OP2"]["x"] = 0.39 + math.sin(self.tick_count * 0.1) * 0.005
-            self.tracks["TRK-OP2"]["y"] = 0.38 + math.cos(self.tick_count * 0.1) * 0.005
-            self.tracks["TRK-OP2"]["history"].append((self.tracks["TRK-OP2"]["x"], self.tracks["TRK-OP2"]["y"]))
+            st = self._station(1)
+            if st:
+                self._move(op(1), st["x"] + math.sin(self.tick_count * 0.1) * 0.005, st["y"] + math.cos(self.tick_count * 0.1) * 0.005)
 
         elif self.current_scene == 3:
-            # Operator 3 left station to rest / hallway
-            self.tracks["TRK-OP3"]["x"] = 0.55 + math.sin(self.tick_count * 0.2) * 0.02
-            self.tracks["TRK-OP3"]["y"] = 0.80 + math.cos(self.tick_count * 0.2) * 0.02
-            self.tracks["TRK-OP3"]["history"].append((self.tracks["TRK-OP3"]["x"], self.tracks["TRK-OP3"]["y"]))
+            if self._station(2):
+                rx, ry = self.layout["rest"]
+                self._move(op(2), rx + math.sin(self.tick_count * 0.2) * 0.02, ry + math.cos(self.tick_count * 0.2) * 0.02)
 
         elif self.current_scene == 4:
             # Excessive travel: Material cart moving fast across entire plant
@@ -249,10 +324,10 @@ class SimulatorEngine:
             self.tracks["TRK-MAT"]["history"].append((self.tracks["TRK-MAT"]["x"], self.tracks["TRK-MAT"]["y"]))
 
         elif self.current_scene == 5:
-            # Abnormal flow: Operator 1 enters restricted storage area
-            self.tracks["TRK-OP1"]["x"] = 0.25 + math.sin(self.tick_count * 0.2) * 0.05
-            self.tracks["TRK-OP1"]["y"] = 0.78 + math.cos(self.tick_count * 0.2) * 0.05
-            self.tracks["TRK-OP1"]["history"].append((self.tracks["TRK-OP1"]["x"], self.tracks["TRK-OP1"]["y"]))
+            # Flujo atípico: el operador 1 entra al almacén
+            if self._station(0):
+                sx, sy = storage
+                self._move(op(0), sx + math.sin(self.tick_count * 0.2) * 0.05, sy + math.cos(self.tick_count * 0.2) * 0.05)
 
         elif self.current_scene == 6:
             # Authorized stop scene: operators paused
@@ -281,47 +356,38 @@ class SimulatorEngine:
             )
             events.append(ev)
 
-        # Emit Machine Cycles & States
-        if self.tick_count % 3 == 0:
-            st2_state = "idle" if self.current_scene == 2 else "running"
-            st3_state = "idle" if self.current_scene == 3 else "running"
-
-            ev_mach = DBEvent(
-                event_id=f"mach-st2-{uuid.uuid4().hex[:8]}",
-                device_id="esp32-line1-st2",
-                source_id="esp32_http",
-                occurred_at=now,
-                received_at=now,
-                type="machine_state",
-                payload={
-                    "station_id": "st-2",
-                    "state": st2_state,
-                    "current_cycle_seconds": 45.0 if st2_state == "running" else 0.0,
-                    "parts_count": 1
-                },
-                quality=1.0,
-                mode=self.mode
+        # Estado de máquina y ciclos por estación (lo que reportaría el sensor de proceso)
+        for i, st in enumerate(stations):
+            sid = st["station_id"]
+            running = not (
+                (self.current_scene == 2 and i == 1)
+                or (self.current_scene == 3 and i == 2)
+                or self.current_scene == 6
             )
-            events.append(ev_mach)
-
-            if st2_state == "running":
-                ev_cyc = DBEvent(
-                    event_id=f"cyc-st2-{uuid.uuid4().hex[:8]}",
-                    device_id="esp32-line1-st2",
-                    source_id="esp32_http",
-                    occurred_at=now,
-                    received_at=now,
+            device = f"esp32-line1-{sid}"
+            if self.tick_count % 3 == 0:
+                events.append(DBEvent(
+                    event_id=f"mach-{sid}-{uuid.uuid4().hex[:8]}",
+                    device_id=device, source_id="esp32_http", occurred_at=now, received_at=now,
+                    type="machine_state",
+                    payload={"station_id": sid, "state": "running" if running else "idle"},
+                    quality=1.0, mode=self.mode,
+                ))
+            if not running:
+                continue
+            self._cycle_acc[sid] = self._cycle_acc.get(sid, 0.0) + self._dt
+            target = self._cycle_next.setdefault(sid, st["ideal"] * random.uniform(0.9, 1.25))
+            if self._cycle_acc[sid] >= target:
+                self._cycle_acc[sid] = 0.0
+                self._cycle_next[sid] = st["ideal"] * random.uniform(0.9, 1.25)
+                self._cycled.add(sid)
+                events.append(DBEvent(
+                    event_id=f"cyc-{sid}-{uuid.uuid4().hex[:8]}",
+                    device_id=device, source_id="esp32_http", occurred_at=now, received_at=now,
                     type="cycle",
-                    payload={
-                        "station_id": "st-2",
-                        "cycle_time_seconds": 44.2,
-                        "is_good_piece": True,
-                        "total_parts": 1
-                    },
-                    quality=1.0,
-                    mode=self.mode
-                )
-                events.append(ev_cyc)
+                    payload={"station_id": sid, "cycle_time_seconds": round(target, 1), "is_good_piece": random.random() > 0.03, "total_parts": 1},
+                    quality=1.0, mode=self.mode,
+                ))
 
         # Emit Environmental telemetry every 5 ticks
         if self.tick_count % 5 == 0:
@@ -351,14 +417,15 @@ class SimulatorEngine:
         st_res = await session.execute(st_stmt)
         stations = st_res.scalars().all()
 
+        idx = {s["station_id"]: i for i, s in enumerate(self.layout["stations"])}
         for st in stations:
+            if st.station_id in self._cycled:
+                st.parts_produced_shift += 1
             if self.current_scene == 1:
                 st.current_status = "active"
-                if self.tick_count % 5 == 0:
-                    st.parts_produced_shift += 1
-            elif self.current_scene == 2 and st.station_id == "st-2":
+            elif self.current_scene == 2 and idx.get(st.station_id) == 1:
                 st.current_status = "waiting_material"
-            elif self.current_scene == 3 and st.station_id == "st-3":
+            elif self.current_scene == 3 and idx.get(st.station_id) == 2:
                 st.current_status = "unattended"
             elif self.current_scene == 6:
                 st.current_status = "stopped"
@@ -366,7 +433,8 @@ class SimulatorEngine:
                 st.current_status = "active"
 
     async def _update_devices_state(self, session: AsyncSession):
-        dev_stmt = select(DBDevice)
+        # Solo los nodos de demostración: un ESP32 real nunca recibe latidos inventados.
+        dev_stmt = select(DBDevice).where(DBDevice.simulated == True)  # noqa: E712
         dev_res = await session.execute(dev_stmt)
         devices = dev_res.scalars().all()
 
@@ -377,5 +445,24 @@ class SimulatorEngine:
                 dev.status = "online"
                 dev.last_heartbeat = self.sim_time
                 dev.last_latency_ms = round(12.0 + random.random() * 8.0, 1)
+
+    async def _sync_scene_stop(self, session: AsyncSession):
+        line_id = (self.layout.get("lines") or ["line-1"])[0]
+        if self.current_scene == 6 and not self._scene_stop_id:
+            self._scene_stop_id = f"stop-sim-{uuid.uuid4().hex[:8]}"
+            session.add(DBStop(
+                id=self._scene_stop_id, scope_type="line", scope_id=line_id,
+                reason="Junta de seguridad (escena de demo)", reason_code="OPE-01", author="Simulador",
+                started_at=self.sim_time, is_authorized=True, status="open",
+            ))
+            await ws_manager.broadcast({"type": "STOP_UPDATED"})
+        elif self.current_scene != 6 and self._scene_stop_id:
+            stop = (await session.execute(select(DBStop).where(DBStop.id == self._scene_stop_id))).scalar_one_or_none()
+            if stop and stop.status == "open":
+                stop.ended_at = self.sim_time
+                stop.duration_seconds = (stop.ended_at - stop.started_at).total_seconds()
+                stop.status = "closed"
+            self._scene_stop_id = None
+            await ws_manager.broadcast({"type": "STOP_UPDATED"})
 
 simulator = SimulatorEngine()

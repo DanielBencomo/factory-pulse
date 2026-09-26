@@ -35,6 +35,17 @@ class DBFloorPlan(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class DBLine(Base):
+    """Línea de producción. El área (polygon) es opcional: si es nula se deriva de sus zonas."""
+    __tablename__ = "lines"
+
+    id = Column(String(64), primary_key=True)
+    floor_plan_id = Column(String(64), ForeignKey("floor_plans.id"), default="fp-main")
+    name = Column(String(128), nullable=False)
+    order = Column(Integer, default=1)
+    polygon = Column(JSON, nullable=True)  # [[x, y], ...] en 0..1
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class DBPolygonZone(Base):
     __tablename__ = "polygon_zones"
 
@@ -49,6 +60,9 @@ class DBPolygonZone(Base):
     max_capacity = Column(Integer, nullable=True)
     max_stay_seconds = Column(Integer, default=300)
     is_aggregated_only = Column(Boolean, default=False)
+    line_id = Column(String(64), nullable=True)
+    # Arreglo interno del área en metros relativos a su esquina superior izquierda.
+    interior = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class DBStation(Base):
@@ -68,6 +82,7 @@ class DBStation(Base):
     last_event_at = Column(DateTime, nullable=True)
     last_cycle_time = Column(Float, nullable=True)
     parts_produced_shift = Column(Integer, default=0)
+    equipment_type = Column(String(32), default="generic")
 
 class DBDevice(Base):
     __tablename__ = "devices"
@@ -84,6 +99,8 @@ class DBDevice(Base):
     last_heartbeat = Column(DateTime, nullable=True)
     last_latency_ms = Column(Float, nullable=True)
     status = Column(String(32), default="online")
+    # True solo para los nodos de demostración que alimenta el simulador.
+    simulated = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class DBStop(Base):
@@ -103,6 +120,28 @@ class DBStop(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class DBBadge(Base):
+    """Tarjeta RFID asignada a una persona. La identidad solo se usa en checkpoints."""
+    __tablename__ = "badges"
+
+    tag_id = Column(String(64), primary_key=True)
+    person = Column(String(128), nullable=False)
+    role = Column(String(64), nullable=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class DBRecording(Base):
+    """Tramo de eventos guardado como respaldo para reproducirlo (plan B de la demo)."""
+    __tablename__ = "recordings"
+
+    id = Column(String(64), primary_key=True)
+    name = Column(String(128), nullable=False)
+    source_mode = Column(String(16), nullable=False)
+    started_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime, nullable=False)
+    event_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class DBStopReason(Base):
     __tablename__ = "stop_reasons"

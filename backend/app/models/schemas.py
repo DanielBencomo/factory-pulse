@@ -123,6 +123,8 @@ class PolygonZoneBase(BaseModel):
     max_capacity: Optional[int] = None
     max_stay_seconds: Optional[int] = 300
     is_aggregated_only: bool = Field(False, description="For bathrooms/rest areas - hides personal IDs")
+    line_id: Optional[str] = None
+    interior: Optional[List[Dict[str, Any]]] = Field(None, description="Equipos y sensores del área, en metros relativos a la zona")
 
 class PolygonZoneCreate(PolygonZoneBase):
     pass
@@ -144,6 +146,7 @@ class StationBase(BaseModel):
     current_status: StationStatus = StationStatus.IDLE
     current_worker_track_id: Optional[str] = None
     target_pieces_per_hour: int = 60
+    equipment_type: str = Field("generic", description="'smt' | 'reflow' | 'aoi' | 'pack' | 'manual' | 'generic'")
 
 class StationCreate(StationBase):
     pass
@@ -153,6 +156,45 @@ class StationResponse(StationBase):
     last_event_at: Optional[datetime] = None
     last_cycle_time: Optional[float] = None
     parts_produced_shift: int = 0
+
+# --- LAYOUT (editor de planta) ---
+
+class LineBase(BaseModel):
+    id: str
+    name: str
+    order: int = 1
+    polygon: Optional[List[List[float]]] = None
+
+class LineResponse(LineBase):
+    floor_plan_id: str = "fp-main"
+
+class LayoutFloorPlan(BaseModel):
+    id: str
+    name: str
+    width_meters: float = Field(..., gt=1.0, le=2000.0)
+    height_meters: float = Field(..., gt=1.0, le=2000.0)
+
+class LayoutZone(PolygonZoneBase):
+    id: str
+
+class LayoutStation(BaseModel):
+    id: str
+    station_id: str
+    line_id: str
+    name: str
+    order_in_line: int
+    ideal_cycle_seconds: float = 45.0
+    position_x: float = Field(..., ge=0.0, le=1.0)
+    position_y: float = Field(..., ge=0.0, le=1.0)
+    target_pieces_per_hour: int = 60
+    equipment_type: str = "generic"
+
+class LayoutPayload(BaseModel):
+    floor_plan: LayoutFloorPlan
+    lines: List[LineBase]
+    zones: List[LayoutZone]
+    stations: List[LayoutStation]
+    author: str = "Editor de layout"
 
 class DeviceBase(BaseModel):
     device_id: str

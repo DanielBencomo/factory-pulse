@@ -31,7 +31,8 @@ async def list_stations(session: AsyncSession = Depends(get_db)):
             target_pieces_per_hour=s.target_pieces_per_hour,
             last_event_at=s.last_event_at,
             last_cycle_time=s.last_cycle_time,
-            parts_produced_shift=s.parts_produced_shift
+            parts_produced_shift=s.parts_produced_shift,
+            equipment_type=s.equipment_type or "generic"
         )
         for s in stations
     ]
@@ -63,5 +64,6 @@ async def update_station_status(station_id: str, new_status: StationStatus, sess
         target_pieces_per_hour=st.target_pieces_per_hour,
         last_event_at=st.last_event_at,
         last_cycle_time=st.last_cycle_time,
-        parts_produced_shift=st.parts_produced_shift
+        parts_produced_shift=st.parts_produced_shift,
+        equipment_type=st.equipment_type or "generic"
     )

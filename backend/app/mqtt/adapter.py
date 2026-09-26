@@ -1,7 +1,7 @@
 import json
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import paho.mqtt.client as mqtt
 
@@ -76,8 +76,11 @@ class MQTTAdapter:
     async def _process_mqtt_event(self, data: dict, topic: str):
         try:
             event_id = data.get("event_id", f"mqtt-{datetime.utcnow().timestamp()}")
-            occurred_at = datetime.fromisoformat(data["occurred_at"]) if "occurred_at" in data else datetime.utcnow()
-            
+            occurred_at = datetime.fromisoformat(data["occurred_at"].replace("Z", "+00:00")) if "occurred_at" in data else datetime.utcnow()
+            if occurred_at.tzinfo is not None:
+                occurred_at = occurred_at.astimezone(timezone.utc).replace(tzinfo=None)
+            effect = None
+
             async with AsyncSessionLocal() as session:
                 ev = DBEvent(
                     event_id=event_id,
@@ -91,7 +94,18 @@ class MQTTAdapter:
                     mode=data.get("mode", "live")
                 )
                 session.add(ev)
+                if ev.mode == "live" and ev.device_id:
+                    from app.devices.registry import touch_device
+                    await touch_device(session, ev.device_id, ingest_mode="mqtt")
+                if ev.mode == "live":
+                    from app.live.effects import apply_event_effects
+                    effect = await apply_event_effects(session, ev)
                 await session.commit()
+
+            if effect:
+                await ws_manager.broadcast({"type": effect})
+            if ev.type == "position":
+                return  # el procesador en vivo difunde las posiciones resumidas
 
             # Broadcast to WebSocket clients
             await ws_manager.broadcast({

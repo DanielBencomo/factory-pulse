@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar, Page, PAGES } from './components/Sidebar';
 import { FloorPlan2D } from './components/FloorPlan2D';
+import { VisionPanel } from './components/VisionPanel';
 import { KpiStrip, StationTablePanel, AlertsPanel, StopsPanel, SourcesStrip } from './components/DashboardGrid';
 import { StopsModal } from './components/StopsModal';
 import { SimulatorControls } from './components/SimulatorControls';
@@ -280,7 +281,10 @@ export const App: React.FC = () => {
         <KpiStrip analytics={analytics} />
         <SourcesStrip devices={devices} tracksCount={Object.keys(tracks).length} mode={mode} />
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-          <div className="xl:col-span-8 min-w-0">
+          <div className="xl:col-span-7 min-w-0">
+            <VisionPanel mode={mode} />
+          </div>
+          <div className="xl:col-span-5 min-w-0">
             <FloorPlan2D
               floorPlan={floorPlan}
               zones={zones}
@@ -298,8 +302,12 @@ export const App: React.FC = () => {
               onEditInterior={setInteriorZoneId}
             />
           </div>
-          <div className="xl:col-span-4 flex flex-col gap-4 min-w-0">
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+          <div className="xl:col-span-7 min-w-0">
             <StationTablePanel analytics={analytics} metrics={metrics} lineName={lineName} />
+          </div>
+          <div className="xl:col-span-5 min-w-0">
             <AlertsPanel
               alerts={alerts}
               onAcknowledgeAlert={handleAcknowledgeAlert}

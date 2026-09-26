@@ -8,9 +8,11 @@
 ## 🚀 Arquitectura del Sistema
 
 ```
-                            [ ESP32 Nodos / Botones / DHT22 ]
-                                           │ (HTTP POST / MQTT)
-                                           ▼
+               [ ESP32 / RFID / CSI ]      [ Webcam / MP4 / RTSP ]
+                         │                 [ YOLO + ByteTrack ]
+                         └──────────────┬──────────────┘
+                                  (HTTP POST)
+                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          BACKEND (FastAPI + Python)                         │
 │  • Ingestión y deduplicación por event_id                                    │
@@ -86,6 +88,7 @@ Daniel/
 - **Python:** 3.10 o superior (Probado en Python 3.12).
 - **Node.js:** v18 o superior (Probado en Node.js v22 y npm 10.9).
 - **Puerto 8000:** Para la API Backend y WebSocket.
+- **Puerto 8001:** Para el video anotado del proveedor de visión.
 - **Puerto 3000 o 5173:** Para el Frontend Vite.
 
 ---
@@ -102,8 +105,17 @@ python -m uvicorn app.main:app --reload --port 8000
 - El simulador arrancará en segundo plano emitiendo telemetría en tiempo real.
 - Documentación Swagger disponible en: `http://localhost:8000/docs`
 
-### 2. Iniciar el Frontend (React + Vite)
-En una segunda terminal:
+### 2. Iniciar visión (opcional, webcam o RTSP)
+En una segunda terminal, desde la raíz:
+```powershell
+pip install -r hardware\vision_requirements.txt
+python hardware\local_vision_provider.py --source webcam --api http://127.0.0.1:8000 --activate-live-mode
+```
+Para usar el teléfono, sustituya `webcam` por su URL RTSP. La guía completa de
+calibración, privacidad y diagnóstico está en [`docs/VISION_YOLO_RTSP.md`](docs/VISION_YOLO_RTSP.md).
+
+### 3. Iniciar el Frontend (React + Vite)
+En una tercera terminal:
 ```powershell
 cd frontend
 npm run dev
@@ -149,7 +161,8 @@ Para probar sin hardware, la app muestra un `curl` por dispositivo que simula su
 |---|---|
 | `hardware/esp32_firmware.ino` | RC522 (checkpoint RFID → `zone_enter` con `tag_id`), pulsadores de paro / material / **pieza terminada**, PIR y pulso de ciclo |
 | `hardware/esp32_csi_node.ino` | Nodo Wi‑Fi CSI experimental: calibra con la zona vacía y reporta `presence` con `state` = actividad / quietud / sin_presencia y confianza |
-| `hardware/local_vision_provider.py` | Cámara de laptop/USB con OpenCV: detección por fondo, IDs anónimos y calibración de 4 puntos a coordenadas de la nave (`--calibrate`) |
+| `hardware/local_vision_provider.py` | Webcam/MP4/RTSP con YOLO + ByteTrack, IDs temporales, zonas, homografía y streams anotados separados (`--calibrate`) |
+| `hardware/vision_requirements.txt` | Dependencias aisladas del proveedor de visión |
 
 Con dispositivos reales, el **procesador en vivo** del backend difunde las posiciones, deriva el
 estado de cada estación, evalúa las reglas y detecta **discrepancias entre sensores** (RFID sin

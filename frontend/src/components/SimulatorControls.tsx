@@ -1,18 +1,6 @@
 import React, { useState } from 'react';
-import {
-  Play,
-  Pause,
-  RotateCcw,
-  FastForward,
-  Radio,
-  Send,
-  Zap,
-  Activity,
-  X,
-  AlertTriangle,
-  Flame,
-  CheckCircle2
-} from 'lucide-react';
+import { Play, Pause, RotateCcw, Send, Check } from 'lucide-react';
+import { Modal } from './Modal';
 
 interface SimulatorControlsProps {
   isOpen: boolean;
@@ -27,6 +15,17 @@ interface SimulatorControlsProps {
   onInjectEvent: (eventData: Record<string, any>) => Promise<void>;
 }
 
+const SCENES = [
+  { num: 1, title: 'Operación normal', desc: 'Flujo balanceado entre las cuatro estaciones con abastecimiento continuo.' },
+  { num: 2, title: 'Estación en espera', desc: 'Operador presente en la estación 2 con la máquina detenida.' },
+  { num: 3, title: 'Estación desatendida', desc: 'Operador ausente en la estación 3 mientras hay material en tránsito.' },
+  { num: 4, title: 'Falta de material', desc: 'Recorrido excesivo del materialista entre almacén y línea.' },
+  { num: 5, title: 'Flujo atípico', desc: 'El operador 1 entra a una zona restringida y dispara una alerta.' },
+  { num: 6, title: 'Paro justificado', desc: 'Paro declarado en la línea 1; se descuenta sin borrar eventos.' },
+  { num: 7, title: 'Pérdida de sensor', desc: 'El ESP32 de la estación 4 pierde latido y se marca desconectado.' },
+  { num: 8, title: 'Inyección externa', desc: 'Evento externo por HTTP o MQTT reflejado de inmediato en el tablero.' },
+];
+
 export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
   isOpen,
   onClose,
@@ -39,7 +38,6 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
   onSetScene,
   onInjectEvent,
 }) => {
-  // Manual Ingestion Form State
   const [injectType, setInjectType] = useState<string>('button_press');
   const [injectStation, setInjectStation] = useState<string>('st-2');
   const [injectButtonAction, setInjectButtonAction] = useState<string>('request_material');
@@ -50,24 +48,12 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
 
   if (!isOpen) return null;
 
-  const scenes = [
-    { num: 1, title: 'Escena 1: Operación Normal', desc: 'Flujo balanceado entre estaciones 1 a 4 con abastecimiento continuo.' },
-    { num: 2, title: 'Escena 2: Estación en Espera', desc: 'Operador presente en Estación 2 pero máquina detenida por falta de balanceo.' },
-    { num: 3, title: 'Escena 3: Estación Desatendida', desc: 'Operador ausente en Estación 3 mientras hay órdenes en tránsito.' },
-    { num: 4, title: 'Escena 4: Falta de Material', desc: 'Cuello de botella en almacén y recorrido excesivo del materialista.' },
-    { num: 5, title: 'Escena 5: Flujo Atípico / Cruce', desc: 'Operador 1 ingresa a zona restringida disparando alerta en motor de reglas.' },
-    { num: 6, title: 'Escena 6: Paro Autorizado', desc: 'Administrador declara paro en Línea 1 deduciendo tiempo planificado sin borrar eventos.' },
-    { num: 7, title: 'Escena 7: Pérdida de Sensor', desc: 'ESP32 de Estación 4 pierde latido; se marca desconectado sin datos inventados.' },
-    { num: 8, title: 'Escena 8: Inyección Externa', desc: 'Envío de evento externo por HTTP / MQTT con actualización instantánea en el tablero.' },
-  ];
-
   const handleSendManualEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsInjecting(true);
     setInjectSuccess(false);
 
     let payload: Record<string, any> = {};
-
     if (injectType === 'button_press') {
       payload = {
         station_id: injectStation,
@@ -76,27 +62,11 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
         notes: 'Pulsación manual inyectada desde panel de control',
       };
     } else if (injectType === 'presence') {
-      payload = {
-        station_id: injectStation,
-        present: injectPresence,
-        confidence: 0.98,
-        device_id: `esp32-line1-${injectStation}`,
-      };
+      payload = { station_id: injectStation, present: injectPresence, confidence: 0.98, device_id: `esp32-line1-${injectStation}` };
     } else if (injectType === 'environment') {
-      payload = {
-        temperature_c: injectTemp,
-        humidity_pct: 62.0,
-        co2_ppm: 680.0,
-        lux: 520.0,
-        station_id: injectStation,
-      };
+      payload = { temperature_c: injectTemp, humidity_pct: 62.0, co2_ppm: 680.0, lux: 520.0, station_id: injectStation };
     } else if (injectType === 'cycle') {
-      payload = {
-        station_id: injectStation,
-        cycle_time_seconds: 42.5,
-        is_good_piece: true,
-        total_parts: 1,
-      };
+      payload = { station_id: injectStation, cycle_time_seconds: 42.5, is_good_piece: true, total_parts: 1 };
     }
 
     try {
@@ -106,7 +76,7 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
         source_id: 'manual_ui_injector',
         occurred_at: new Date().toISOString(),
         type: injectType,
-        payload: payload,
+        payload,
         quality: 1.0,
         mode: 'live',
       });
@@ -120,223 +90,140 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl">
-        {/* Header */}
-        <div className="p-5 border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2.5 bg-cyan-500/20 text-cyan-400 rounded-xl">
-              <Activity className="h-6 w-6 animate-pulse" />
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-white">Simulador Determinista & Inyección de Telemetría</h3>
-              <p className="text-xs text-slate-400">
-                Control de las 8 escenas obligatorias y banco de pruebas de eventos IoT
-              </p>
-            </div>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white p-1 rounded-lg">
-            <X className="h-6 w-6" />
-          </button>
-        </div>
-
-        {/* Playback Controls Bar */}
-        <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            {isRunning ? (
-              <button
-                onClick={onPause}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 shadow"
-              >
-                <Pause className="h-4 w-4" /> Pausar Simulación
-              </button>
-            ) : (
-              <button
-                onClick={() => onStart(speed)}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-600/30"
-              >
-                <Play className="h-4 w-4" /> Iniciar Simulación
-              </button>
-            )}
-
-            <button
-              onClick={onReset}
-              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-semibold text-xs flex items-center gap-1.5"
-            >
-              <RotateCcw className="h-4 w-4" /> Reiniciar Dataset Demo
+    <Modal title="Simulador" subtitle="Escenas deterministas del guion de demo e inyección manual de eventos." onClose={onClose} width="max-w-4xl" bodyClassName="">
+      {/* Controles de reproducción */}
+      <div className="px-5 py-3 border-b border-line flex flex-wrap items-center justify-between gap-3 bg-paper/60">
+        <div className="flex items-center gap-2">
+          {isRunning ? (
+            <button onClick={onPause} className="btn">
+              <Pause className="h-3.5 w-3.5" /> Pausar
             </button>
-          </div>
-
-          {/* Speed Selector */}
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-400 font-semibold">Velocidad:</span>
+          ) : (
+            <button onClick={() => onStart(speed)} className="btn btn-primary">
+              <Play className="h-3.5 w-3.5" /> Reanudar
+            </button>
+          )}
+          <button onClick={onReset} className="btn btn-ghost">
+            <RotateCcw className="h-3.5 w-3.5" /> Reiniciar datos demo
+          </button>
+          <span className="flex items-center gap-1.5 text-[12px] text-ink-3 ml-2">
+            <span className="dot" style={{ background: isRunning ? 'var(--color-ok)' : 'var(--color-ink-4)' }} />
+            {isRunning ? 'Corriendo' : 'En pausa'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-[12px]">
+          <span className="text-ink-3">Velocidad</span>
+          <div className="seg">
             {[0.5, 1.0, 2.0, 5.0].map((s) => (
-              <button
-                key={s}
-                onClick={() => onStart(s)}
-                className={`px-2.5 py-1 rounded font-mono text-xs ${
-                  speed === s
-                    ? 'bg-cyan-500 text-slate-950 font-bold'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                }`}
-              >
-                {s}x
+              <button key={s} aria-pressed={speed === s} onClick={() => onStart(s)} className="num">
+                {s}×
               </button>
             ))}
           </div>
         </div>
+      </div>
 
-        {/* Content Body */}
-        <div className="p-5 overflow-y-auto flex-1 grid grid-cols-1 lg:grid-cols-2 gap-5">
-          {/* Left Column: 8 Scenes Quick Jump */}
-          <div>
-            <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center gap-1.5">
-              <Flame className="h-4 w-4 text-cyan-400" />
-              Guion de 8 Escenas Preconfiguradas
-            </h4>
-
-            <div className="space-y-2">
-              {scenes.map((sc) => (
-                <div
-                  key={sc.num}
-                  onClick={() => onSetScene(sc.num)}
-                  className={`p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                    currentScene === sc.num
-                      ? 'bg-cyan-950/40 border-cyan-500 shadow-md shadow-cyan-500/10'
-                      : 'bg-slate-950/40 border-slate-800 hover:border-slate-700 hover:bg-slate-800/30'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-bold text-white">{sc.title}</span>
-                    {currentScene === sc.num && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
-                        ACTIVA
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-slate-400 text-[11px]">{sc.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Right Column: Inyección Manual de Eventos */}
-          <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
-            <div>
-              <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                <Zap className="h-4 w-4 text-amber-400" />
-                Inyector Manual de Telemetría (ESP32 / Sensor)
-              </h4>
-
-              <form onSubmit={handleSendManualEvent} className="space-y-3 text-xs">
-                <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Tipo de Evento:</label>
-                  <select
-                    value={injectType}
-                    onChange={(e) => setInjectType(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none"
-                  >
-                    <option value="button_press">Pulsación de Botón Andon / SOS</option>
-                    <option value="presence">Sensor de Presencia / PIR</option>
-                    <option value="cycle">Ciclo de Producción (Pieza Terminada)</option>
-                    <option value="environment">Sensor Ambiental (Temperatura/Humedad)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Estación Destino:</label>
-                  <select
-                    value={injectStation}
-                    onChange={(e) => setInjectStation(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none"
-                  >
-                    <option value="st-1">Estación 1 (SMT)</option>
-                    <option value="st-2">Estación 2 (Reflow)</option>
-                    <option value="st-3">Estación 3 (AOI)</option>
-                    <option value="st-4">Estación 4 (Empaque)</option>
-                  </select>
-                </div>
-
-                {injectType === 'button_press' && (
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Acción del Botón:</label>
-                    <select
-                      value={injectButtonAction}
-                      onChange={(e) => setInjectButtonAction(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none"
-                    >
-                      <option value="request_material">Solicitar Material (Andon Amarillo)</option>
-                      <option value="supervisor_call">Llamar a Supervisor (Andon Azul)</option>
-                      <option value="sos">Emergencia / SOS (Andon Rojo)</option>
-                      <option value="stop_line">Paro de Línea Inmediato</option>
-                    </select>
-                  </div>
-                )}
-
-                {injectType === 'presence' && (
-                  <div className="flex items-center gap-3 pt-2">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        checked={injectPresence === true}
-                        onChange={() => setInjectPresence(true)}
-                        name="presence"
-                        className="text-cyan-500"
-                      />
-                      <span className="text-slate-300">Operador Detectado (Presente)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        checked={injectPresence === false}
-                        onChange={() => setInjectPresence(false)}
-                        name="presence"
-                        className="text-rose-500"
-                      />
-                      <span className="text-slate-300">Estación Vacía (Ausente)</span>
-                    </label>
-                  </div>
-                )}
-
-                {injectType === 'environment' && (
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Temperatura Simulada (°C):</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      value={injectTemp}
-                      onChange={(e) => setInjectTemp(Number(e.target.value))}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none font-mono"
-                    />
-                  </div>
-                )}
-
-                {injectSuccess && (
-                  <div className="p-2.5 bg-emerald-950/40 border border-emerald-800 rounded-lg text-emerald-300 flex items-center gap-1.5 font-semibold text-[11px]">
-                    <CheckCircle2 className="h-4 w-4" />
-                    ¡Evento inyectado con éxito! Se refleja en el tablero por WebSocket.
-                  </div>
-                )}
-
-                <div className="pt-2">
+      <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1fr]">
+        {/* Escenas */}
+        <div className="p-5 lg:border-r border-line">
+          <div className="eyebrow mb-2">Escenas</div>
+          <ol className="border border-line rounded-[2px] divide-y divide-line">
+            {SCENES.map((sc) => {
+              const active = currentScene === sc.num;
+              return (
+                <li key={sc.num}>
                   <button
-                    type="submit"
-                    disabled={isInjecting}
-                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-bold flex items-center justify-center gap-2 shadow-lg shadow-amber-600/20"
+                    onClick={() => onSetScene(sc.num)}
+                    className={`w-full text-left px-3 py-2.5 flex gap-3 items-start cursor-pointer ${active ? 'bg-accent-soft' : 'hover:bg-sunken'}`}
+                    aria-current={active}
                   >
-                    <Send className="h-4 w-4" />
-                    <span>{isInjecting ? 'Emitiendo...' : 'Inyectar Evento a la API'}</span>
+                    <span className={`num text-[11.5px] w-5 pt-px ${active ? 'text-accent font-semibold' : 'text-ink-3'}`}>{String(sc.num).padStart(2, '0')}</span>
+                    <span className="flex-1">
+                      <span className="block text-[13px] font-medium">{sc.title}</span>
+                      <span className="block text-[12px] text-ink-2 leading-snug mt-0.5">{sc.desc}</span>
+                    </span>
+                    {active && <span className="chip chip-accent mt-0.5">activa</span>}
                   </button>
-                </div>
-              </form>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+
+        {/* Inyector */}
+        <div className="p-5">
+          <div className="eyebrow mb-2">Inyectar evento</div>
+          <form onSubmit={handleSendManualEvent} className="space-y-3">
+            <div>
+              <label className="label" htmlFor="inj-type">Tipo</label>
+              <select id="inj-type" value={injectType} onChange={(e) => setInjectType(e.target.value)} className="field">
+                <option value="button_press">Pulsador andon</option>
+                <option value="presence">Presencia (PIR)</option>
+                <option value="cycle">Ciclo de producción</option>
+                <option value="environment">Ambiental (temperatura / humedad)</option>
+              </select>
+            </div>
+            <div>
+              <label className="label" htmlFor="inj-station">Estación</label>
+              <select id="inj-station" value={injectStation} onChange={(e) => setInjectStation(e.target.value)} className="field">
+                <option value="st-1">Estación 1 · SMT</option>
+                <option value="st-2">Estación 2 · Reflow</option>
+                <option value="st-3">Estación 3 · AOI</option>
+                <option value="st-4">Estación 4 · Empaque</option>
+              </select>
             </div>
 
-            <div className="mt-4 p-3 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-400">
-              💡 <b>Nota:</b> La inyección viaja por <code>POST /api/events</code>, se guarda en SQLite y se emite de inmediato por <code>WebSocket /ws</code>.
+            {injectType === 'button_press' && (
+              <div>
+                <label className="label" htmlFor="inj-action">Acción</label>
+                <select id="inj-action" value={injectButtonAction} onChange={(e) => setInjectButtonAction(e.target.value)} className="field">
+                  <option value="request_material">Solicitar material</option>
+                  <option value="supervisor_call">Llamar a supervisor</option>
+                  <option value="sos">Emergencia</option>
+                  <option value="stop_line">Paro de línea</option>
+                </select>
+              </div>
+            )}
+
+            {injectType === 'presence' && (
+              <fieldset className="flex gap-4 text-[12.5px] pt-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="presence" checked={injectPresence} onChange={() => setInjectPresence(true)} />
+                  Presente
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="presence" checked={!injectPresence} onChange={() => setInjectPresence(false)} />
+                  Ausente
+                </label>
+              </fieldset>
+            )}
+
+            {injectType === 'environment' && (
+              <div>
+                <label className="label" htmlFor="inj-temp">Temperatura (°C)</label>
+                <input id="inj-temp" type="number" step="0.5" value={injectTemp} onChange={(e) => setInjectTemp(Number(e.target.value))} className="field num" />
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 pt-1">
+              <button type="submit" disabled={isInjecting} className="btn btn-primary">
+                <Send className="h-3.5 w-3.5" />
+                {isInjecting ? 'Enviando…' : 'Enviar a la API'}
+              </button>
+              {injectSuccess && (
+                <span className="flex items-center gap-1 text-[12px] text-ok">
+                  <Check className="h-3.5 w-3.5" /> Evento registrado
+                </span>
+              )}
             </div>
-          </div>
+          </form>
+
+          <p className="mt-5 text-[12px] text-ink-3 leading-snug">
+            El evento viaja por <code className="num text-ink-2">POST /api/events</code>, se guarda en SQLite y se difunde por{' '}
+            <code className="num text-ink-2">/ws</code>.
+          </p>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 };

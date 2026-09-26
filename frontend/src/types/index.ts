@@ -17,6 +17,7 @@ export type StationStatus =
   | 'waiting_material'
   | 'unattended'
   | 'stopped'
+  | 'present'
   | 'unknown';
 
 export type StopScope = 'plant' | 'line' | 'station' | 'zone';
@@ -62,7 +63,56 @@ export interface PolygonZone {
   max_capacity?: number;
   max_stay_seconds?: number;
   is_aggregated_only: boolean;
+  line_id?: string | null;
+  interior?: InteriorItem[] | null;
 }
+
+export type InteriorKind =
+  | 'machine'
+  | 'conveyor'
+  | 'bench'
+  | 'rack'
+  | 'workstation'
+  | 'cart'
+  | 'rfid'
+  | 'csi'
+  | 'button'
+  | 'process'
+  | 'camera';
+
+/** Elemento dentro de un área, en metros desde la esquina superior izquierda de la zona. */
+export interface InteriorItem {
+  id: string;
+  kind: InteriorKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rot: 0 | 90 | 180 | 270;
+  label?: string | null;
+  variant?: string | null;
+  device_id?: string | null;
+}
+
+export type EquipmentType = 'smt' | 'reflow' | 'aoi' | 'pack' | 'manual' | 'generic';
+
+export interface Line {
+  id: string;
+  name: string;
+  order: number;
+  /** Área de la línea en 0..1. Nula = se deriva de sus zonas. */
+  polygon: [number, number][] | null;
+}
+
+export interface Layout {
+  floor_plan: { id: string; name: string; width_meters: number; height_meters: number };
+  lines: Line[];
+  zones: PolygonZone[];
+  stations: Station[];
+}
+
+/** Punto de trayectoria: x, y normalizados y marca de tiempo en ms. */
+export type TrackPoint = [number, number, number];
 
 export interface Station {
   id: string;
@@ -79,6 +129,7 @@ export interface Station {
   last_event_at?: string;
   last_cycle_time?: number;
   parts_produced_shift: number;
+  equipment_type?: EquipmentType;
 }
 
 export interface Device {
@@ -93,8 +144,108 @@ export interface Device {
   is_active: boolean;
   last_heartbeat?: string;
   last_latency_ms?: number;
-  status: 'online' | 'offline' | 'warning';
+  status: DeviceStatus;
+  simulated?: boolean;
   created_at: string;
+}
+
+export type DeviceStatus = 'online' | 'offline' | 'waiting' | 'warning';
+export type SystemMode = 'demo' | 'live' | 'replay';
+
+export interface Playback {
+  active: boolean;
+  recording_id: string | null;
+  name: string | null;
+  speed: number;
+  loop: boolean;
+  progress: number;
+}
+
+export interface Recording {
+  id: string;
+  name: string;
+  source_mode: string;
+  started_at: string;
+  ended_at: string;
+  duration_s: number;
+  event_count: number;
+}
+
+export interface Badge {
+  tag_id: string;
+  person: string;
+  role?: string | null;
+  active?: boolean;
+}
+
+export interface ZoneSignals {
+  zone_id: string;
+  station_id: string | null;
+  mode: SystemMode;
+  now: string;
+  rfid: { tag_id: string; kind: 'entrada' | 'salida'; at: string; person: string | null; role: string | null; device_id: string | null }[];
+  csi: { state: 'actividad' | 'quietud' | 'sin_presencia'; confidence: number | null; motion: number | null; at: string; device_id: string | null } | null;
+  pir: { present: boolean; confidence: number | null; at: string; device_id: string | null } | null;
+  button: { action: string; at: string; device_id: string | null } | null;
+  process: { cycles_last_hour: number; last_cycle: { at: string; cycle_time_seconds: number | null } | null; machine: { state: string; at: string } | null };
+}
+
+export interface ConnectInfo {
+  mode: SystemMode;
+  lan_ips: string[];
+  port: number;
+  base_url: string;
+  events_url: string;
+  heartbeat_url_template: string;
+  heartbeat_interval_seconds: number;
+  device_timeout_seconds: number;
+  mqtt: { enabled: boolean; host: string; port: number; topic_template: string };
+}
+
+export type AnalyticsState = 'productivo' | 'espera' | 'presente' | 'ausencia' | 'paro' | 'sin_datos';
+
+export interface StationAnalytics {
+  station_id: string;
+  name: string;
+  order: number;
+  seconds: Record<AnalyticsState, number>;
+  has_process_data: boolean;
+  pieces: number;
+  good_pct: number | null;
+  pieces_per_hour: number;
+  available_s: number;
+  target_pph: number;
+  avg_cycle_s: number | null;
+  ideal_cycle_s: number;
+}
+
+export interface Analytics {
+  line_id: string;
+  mode: SystemMode;
+  window: { start_ms: number; end_ms: number; step_s: number; bucket_s: number };
+  states: AnalyticsState[];
+  summary: {
+    seconds: Record<AnalyticsState, number>;
+    available_s: number;
+    pct_of_available: Record<Exclude<AnalyticsState, 'paro' | 'sin_datos'>, number>;
+    stops_minutes: number;
+    line_output: number;
+    line_output_target: number;
+    bottleneck_station_id: string | null;
+    distance_m: number;
+    has_position_data: boolean;
+    has_process_data: boolean;
+  };
+  stations: StationAnalytics[];
+  timeline: { station_id: string; segments: [number, number, AnalyticsState][] }[];
+  buckets_ms: number[];
+  output_by_bucket: Record<string, number[]>;
+  line_output_by_bucket: number[];
+  line_target_per_bucket: number;
+  distance_by_bucket: Record<string, number[]>;
+  stops_pareto: { reason: string; minutes: number; count: number }[];
+  zone_dwell: { zone_id: string; name: string; type: string; person_s: number; occupied_s: number; visits: number | null; is_aggregated_only: boolean }[];
+  previous_summary: Analytics['summary'] | null;
 }
 
 export interface Stop {

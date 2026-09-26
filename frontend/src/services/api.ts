@@ -1,10 +1,17 @@
 import {
   FloorPlan, PolygonZone, Station, Device, Stop, StopReason,
   Alert, AlertRuleConfig, MetricsSummary, DashboardConfig,
-  CatalogModule, ScaleCalibration
+  CatalogModule, ScaleCalibration, Layout, Line, TrackPoint,
+  Analytics, ConnectInfo, SystemMode, InteriorItem, Badge, Recording, Playback, ZoneSignals
 } from '../types';
 
 const API_BASE = '/api';
+
+async function errorText(res: Response, fallback: string) {
+  const err = await res.json().catch(() => ({}));
+  if (Array.isArray(err.detail)) return err.detail.map((d: any) => (typeof d === 'string' ? d : d.msg)).join(' · ');
+  return err.detail || fallback;
+}
 
 export const api = {
   // Health
@@ -69,6 +76,105 @@ export const api = {
     return res.json();
   },
 
+  // Layout editable
+  async getLayout(): Promise<Layout> {
+    const res = await fetch(`${API_BASE}/layout`);
+    if (!res.ok) throw new Error('Error fetching layout');
+    return res.json();
+  },
+
+  async saveLayout(layout: Layout): Promise<Layout> {
+    const res = await fetch(`${API_BASE}/layout`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(layout),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const detail = Array.isArray(err.detail)
+        ? err.detail.map((d: any) => (typeof d === 'string' ? d : d.msg)).join(' · ')
+        : err.detail;
+      throw new Error(detail || 'No se pudo guardar el layout');
+    }
+    return res.json();
+  },
+
+  async listLines(): Promise<Line[]> {
+    const res = await fetch(`${API_BASE}/lines`);
+    return res.json();
+  },
+
+  async getTrackHistory(minutes: number = 30): Promise<Record<string, TrackPoint[]>> {
+    const res = await fetch(`${API_BASE}/tracks/history?minutes=${minutes}`);
+    if (!res.ok) return {};
+    return res.json();
+  },
+
+  // Interior de un área
+  async saveInterior(zoneId: string, items: InteriorItem[], operator?: { x: number; y: number }) {
+    const res = await fetch(`${API_BASE}/zones/${zoneId}/interior`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, operator }),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo guardar el interior'));
+    return res.json();
+  },
+
+  // Analítica reconstruida desde eventos
+  async getAnalytics(lineId: string, minutes: number): Promise<Analytics> {
+    const res = await fetch(`${API_BASE}/analytics?line_id=${encodeURIComponent(lineId)}&minutes=${minutes}`);
+    if (!res.ok) throw new Error('Error fetching analytics');
+    return res.json();
+  },
+
+  // Modo del sistema y conexión de dispositivos
+  async getSystemMode(): Promise<{ mode: SystemMode; simulator_running: boolean; playback?: Playback }> {
+    const res = await fetch(`${API_BASE}/system/mode`);
+    return res.json();
+  },
+
+  async setSystemMode(mode: SystemMode): Promise<{ mode: SystemMode; simulator_running: boolean; playback?: Playback }> {
+    const res = await fetch(`${API_BASE}/system/mode?mode=${mode}`, { method: 'PUT' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo cambiar el modo'));
+    return res.json();
+  },
+
+  async getConnectInfo(): Promise<ConnectInfo> {
+    const res = await fetch(`${API_BASE}/connect/info`);
+    return res.json();
+  },
+
+  async listDeviceTypes(): Promise<{ value: string; label: string }[]> {
+    const res = await fetch(`${API_BASE}/devices/types`);
+    return res.json();
+  },
+
+  async registerDevice(dev: { device_id: string; name: string; type: string; station_id?: string | null; zone_id?: string | null }) {
+    const res = await fetch(`${API_BASE}/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(dev),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo registrar el dispositivo'));
+    return res.json();
+  },
+
+  async updateDevice(deviceId: string, patch: Partial<Device>) {
+    const res = await fetch(`${API_BASE}/devices/${encodeURIComponent(deviceId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo actualizar el dispositivo'));
+    return res.json();
+  },
+
+  async deleteDevice(deviceId: string) {
+    const res = await fetch(`${API_BASE}/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo eliminar el dispositivo'));
+  },
+
   // Devices
   async listDevices(): Promise<Device[]> {
     const res = await fetch(`${API_BASE}/devices`);
@@ -100,6 +206,69 @@ export const api = {
       throw new Error(err.detail || 'Error creating stop');
     }
     return res.json();
+  },
+
+  async updateStop(stopId: string, patch: Partial<Stop>): Promise<Stop> {
+    const res = await fetch(`${API_BASE}/stops/${stopId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo actualizar el paro'));
+    return res.json();
+  },
+
+  // Señales reales de un área y tarjetas RFID
+  async getZoneSignals(zoneId: string): Promise<ZoneSignals> {
+    const res = await fetch(`${API_BASE}/zones/${encodeURIComponent(zoneId)}/signals`);
+    if (!res.ok) throw new Error('Error fetching signals');
+    return res.json();
+  },
+
+  async listBadges(): Promise<{ badges: Badge[]; unknown: { tag_id: string; last_seen: string; station_id?: string; reads: number }[] }> {
+    const res = await fetch(`${API_BASE}/badges`);
+    return res.json();
+  },
+
+  async saveBadge(b: Badge) {
+    const res = await fetch(`${API_BASE}/badges`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(b),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo guardar la tarjeta'));
+    return res.json();
+  },
+
+  async deleteBadge(tagId: string) {
+    await fetch(`${API_BASE}/badges/${encodeURIComponent(tagId)}`, { method: 'DELETE' });
+  },
+
+  // Grabaciones (plan B)
+  async listRecordings(): Promise<{ recordings: Recording[]; playback: Playback }> {
+    const res = await fetch(`${API_BASE}/recordings`);
+    return res.json();
+  },
+
+  async saveRecording(name: string, minutes: number): Promise<Recording> {
+    const res = await fetch(`${API_BASE}/recordings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, minutes }),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo guardar la grabación'));
+    return res.json();
+  },
+
+  async playRecording(id: string, speed = 1, loop = true): Promise<Playback> {
+    const res = await fetch(`${API_BASE}/recordings/${id}/play?speed=${speed}&loop=${loop}`, { method: 'POST' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo reproducir'));
+    return res.json();
+  },
+
+  async deleteRecording(id: string) {
+    const res = await fetch(`${API_BASE}/recordings/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo eliminar'));
   },
 
   async closeStop(stopId: string, endedAt?: string): Promise<Stop> {

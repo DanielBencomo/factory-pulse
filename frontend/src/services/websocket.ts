@@ -3,6 +3,7 @@ type MessageCallback = (data: any) => void;
 class WebSocketClient {
   private socket: WebSocket | null = null;
   private listeners: Set<MessageCallback> = new Set();
+  private statusListeners: Set<(open: boolean) => void> = new Set();
   private reconnectTimeout: number | null = null;
   private isConnecting: boolean = false;
   private url: string;
@@ -24,7 +25,7 @@ class WebSocketClient {
 
       this.socket.onopen = () => {
         this.isConnecting = false;
-        console.log('[WS] Conectado exitosamente con Factory Pulse Backend');
+        this.statusListeners.forEach((cb) => cb(true));
       };
 
       this.socket.onmessage = (event) => {
@@ -38,6 +39,7 @@ class WebSocketClient {
 
       this.socket.onclose = () => {
         this.isConnecting = false;
+        this.statusListeners.forEach((cb) => cb(false));
         this.scheduleReconnect();
       };
 
@@ -63,6 +65,15 @@ class WebSocketClient {
     this.listeners.add(callback);
     return () => {
       this.listeners.delete(callback);
+    };
+  }
+
+  /** Avisa cada vez que la conexión se abre o se cae. */
+  public onStatus(cb: (open: boolean) => void): () => void {
+    this.statusListeners.add(cb);
+    cb(this.socket?.readyState === WebSocket.OPEN);
+    return () => {
+      this.statusListeners.delete(cb);
     };
   }
 

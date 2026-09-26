@@ -7,6 +7,15 @@ from sqlalchemy import select, update
 from app.models.db_models import DBAlert, DBAlertRule, DBEvent, DBStation, DBDevice
 from app.models.domain import AlertSeverity, AlertStatus
 
+async def has_open_alert(session: AsyncSession, rule_id: str, scope_id: Optional[str]) -> bool:
+    stmt = select(DBAlert.id).where(
+        DBAlert.rule_id == rule_id,
+        DBAlert.scope_id == scope_id,
+        DBAlert.status != "resolved",
+    ).limit(1)
+    return (await session.execute(stmt)).first() is not None
+
+
 class RuleEngine:
     def __init__(self):
         self.last_triggered: Dict[str, datetime] = {}
@@ -147,6 +156,10 @@ class RuleEngine:
 
             if alert_triggered:
                 self.last_triggered[rule_key] = now
+                # Una condición que persiste no debe generar una alerta nueva cada enfriamiento:
+                # si ya hay una igual sin resolver, se deja esa.
+                if await has_open_alert(session, rule.rule_id, scope_id):
+                    continue
                 alert = DBAlert(
                     id=f"alt-{uuid.uuid4().hex[:8]}",
                     rule_id=rule.rule_id,

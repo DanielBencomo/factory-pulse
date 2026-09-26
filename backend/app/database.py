@@ -3,11 +3,11 @@ import uuid
 from datetime import datetime, timedelta
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.config import settings
 from app.models.db_models import (
-    Base, DBFloorPlan, DBPolygonZone, DBStation, DBDevice,
+    Base, DBFloorPlan, DBLine, DBPolygonZone, DBStation, DBDevice,
     DBStopReason, DBAlertRule, DBDashboard, DBAuditLog
 )
 
@@ -34,9 +34,34 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.rollback()
             raise
 
+# Columnas agregadas después de la primera versión. create_all no altera tablas
+# existentes, así que se agregan aquí de forma idempotente (solo SQLite).
+_ADDED_COLUMNS = [
+    ("polygon_zones", "line_id", "VARCHAR(64)"),
+    ("stations", "equipment_type", "VARCHAR(32)"),
+    ("polygon_zones", "interior", "JSON"),
+    ("devices", "simulated", "BOOLEAN DEFAULT 0"),
+]
+
+async def _migrate_columns(conn):
+    if "sqlite" not in settings.DATABASE_URL:
+        return
+    for table, column, ddl in _ADDED_COLUMNS:
+        cols = (await conn.execute(text(f"PRAGMA table_info({table})"))).fetchall()
+        if cols and column not in {c[1] for c in cols}:
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+def _equipment_from_name(name: str) -> str:
+    n = name.lower()
+    for key, kind in (("smt", "smt"), ("reflow", "reflow"), ("reflujo", "reflow"), ("aoi", "aoi"), ("empaque", "pack")):
+        if key in n:
+            return kind
+    return "generic"
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_columns(conn)
     
     # Run idempotent default seeding
     async with AsyncSessionLocal() as session:
@@ -64,6 +89,10 @@ async def seed_default_data(session: AsyncSession):
         )
         session.add(fp)
 
+    # 1b. Línea de producción por defecto
+    if not (await session.execute(select(DBLine).where(DBLine.id == "line-1"))).scalar_one_or_none():
+        session.add(DBLine(id="line-1", floor_plan_id="fp-main", name="Línea 1", order=1, polygon=None))
+
     # 2. Polygon Zones
     zones_data = [
         {
@@ -75,6 +104,7 @@ async def seed_default_data(session: AsyncSession):
             "polygon": [[0.08, 0.20], [0.26, 0.20], [0.26, 0.55], [0.08, 0.55]],
             "color": "#3b82f6",
             "station_ids": ["st-1"],
+            "line_id": "line-1",
             "max_stay_seconds": 600,
             "is_aggregated_only": False
         },
@@ -87,6 +117,7 @@ async def seed_default_data(session: AsyncSession):
             "polygon": [[0.30, 0.20], [0.48, 0.20], [0.48, 0.55], [0.30, 0.55]],
             "color": "#10b981",
             "station_ids": ["st-2"],
+            "line_id": "line-1",
             "max_stay_seconds": 600,
             "is_aggregated_only": False
         },
@@ -99,6 +130,7 @@ async def seed_default_data(session: AsyncSession):
             "polygon": [[0.52, 0.20], [0.70, 0.20], [0.70, 0.55], [0.52, 0.55]],
             "color": "#8b5cf6",
             "station_ids": ["st-3"],
+            "line_id": "line-1",
             "max_stay_seconds": 600,
             "is_aggregated_only": False
         },
@@ -111,6 +143,7 @@ async def seed_default_data(session: AsyncSession):
             "polygon": [[0.74, 0.20], [0.92, 0.20], [0.92, 0.55], [0.74, 0.55]],
             "color": "#f59e0b",
             "station_ids": ["st-4"],
+            "line_id": "line-1",
             "max_stay_seconds": 600,
             "is_aggregated_only": False
         },
@@ -171,10 +204,10 @@ async def seed_default_data(session: AsyncSession):
 
     # 3. Stations
     stations_data = [
-        {"id": "st-1", "station_id": "st-1", "line_id": "line-1", "name": "Estación 1 (SMT)", "order_in_line": 1, "ideal_cycle_seconds": 40.0, "position_x": 0.17, "position_y": 0.38, "target_pieces_per_hour": 75},
-        {"id": "st-2", "station_id": "st-2", "line_id": "line-1", "name": "Estación 2 (Reflow)", "order_in_line": 2, "ideal_cycle_seconds": 45.0, "position_x": 0.39, "position_y": 0.38, "target_pieces_per_hour": 65},
-        {"id": "st-3", "station_id": "st-3", "line_id": "line-1", "name": "Estación 3 (AOI)", "order_in_line": 3, "ideal_cycle_seconds": 35.0, "position_x": 0.61, "position_y": 0.38, "target_pieces_per_hour": 80},
-        {"id": "st-4", "station_id": "st-4", "line_id": "line-1", "name": "Estación 4 (Empaque)", "order_in_line": 4, "ideal_cycle_seconds": 50.0, "position_x": 0.83, "position_y": 0.38, "target_pieces_per_hour": 60},
+        {"id": "st-1", "station_id": "st-1", "line_id": "line-1", "name": "Estación 1 (SMT)", "order_in_line": 1, "ideal_cycle_seconds": 40.0, "position_x": 0.17, "position_y": 0.38, "target_pieces_per_hour": 75, "equipment_type": "smt"},
+        {"id": "st-2", "station_id": "st-2", "line_id": "line-1", "name": "Estación 2 (Reflow)", "order_in_line": 2, "ideal_cycle_seconds": 45.0, "position_x": 0.39, "position_y": 0.38, "target_pieces_per_hour": 65, "equipment_type": "reflow"},
+        {"id": "st-3", "station_id": "st-3", "line_id": "line-1", "name": "Estación 3 (AOI)", "order_in_line": 3, "ideal_cycle_seconds": 35.0, "position_x": 0.61, "position_y": 0.38, "target_pieces_per_hour": 80, "equipment_type": "aoi"},
+        {"id": "st-4", "station_id": "st-4", "line_id": "line-1", "name": "Estación 4 (Empaque)", "order_in_line": 4, "ideal_cycle_seconds": 50.0, "position_x": 0.83, "position_y": 0.38, "target_pieces_per_hour": 60, "equipment_type": "pack"},
     ]
     for st in stations_data:
         stmt = select(DBStation).where(DBStation.id == st["id"])
@@ -182,20 +215,33 @@ async def seed_default_data(session: AsyncSession):
         if not res.scalar_one_or_none():
             session.add(DBStation(**st))
 
-    # 4. Devices
+    # 3b. Rellenar campos nuevos en bases creadas antes de que existieran
+    await session.flush()
+    for st in (await session.execute(select(DBStation))).scalars().all():
+        if not st.equipment_type:
+            st.equipment_type = _equipment_from_name(st.name)
+    st_lines = {st.station_id: st.line_id for st in (await session.execute(select(DBStation))).scalars().all()}
+    for z in (await session.execute(select(DBPolygonZone))).scalars().all():
+        if z.line_id is None and z.station_ids:
+            z.line_id = st_lines.get(z.station_ids[0])
+
+    # 4. Devices (nodos de demostración: los alimenta el simulador)
     devices_data = [
-        {"id": "dev-esp32-01", "device_id": "esp32-line1-st1", "name": "ESP32 Nodo Estación 1 (Botón & ToF)", "type": "esp32", "station_id": "st-1", "zone_id": "zone-ws1", "ingest_mode": "http", "status": "online"},
-        {"id": "dev-esp32-02", "device_id": "esp32-line1-st2", "name": "ESP32 Nodo Estación 2 (Corriente/Ciclo)", "type": "esp32", "station_id": "st-2", "zone_id": "zone-ws2", "ingest_mode": "http", "status": "online"},
-        {"id": "dev-esp32-03", "device_id": "esp32-line1-st3", "name": "ESP32 Nodo Estación 3 (PIR Presencia)", "type": "esp32", "station_id": "st-3", "zone_id": "zone-ws3", "ingest_mode": "mqtt", "status": "online"},
-        {"id": "dev-esp32-04", "device_id": "esp32-line1-st4", "name": "ESP32 Nodo Estación 4 (Andon/Empaque)", "type": "esp32", "station_id": "st-4", "zone_id": "zone-ws4", "ingest_mode": "http", "status": "online"},
-        {"id": "dev-cam-01", "device_id": "cam-overhead-line1", "name": "Cámara Cenital Visión Local (OpenCV)", "type": "camera_vision", "station_id": None, "zone_id": "zone-transit", "ingest_mode": "http", "status": "online"},
-        {"id": "dev-env-01", "device_id": "env-dht22-ambient", "name": "ESP32 Sensor Ambiental (DHT22)", "type": "esp32", "station_id": "st-2", "zone_id": "zone-ws2", "ingest_mode": "mqtt", "status": "online"}
+        {"id": "dev-esp32-01", "device_id": "esp32-line1-st1", "name": "ESP32 Nodo Estación 1 (Botón & ToF)", "type": "esp32", "station_id": "st-1", "zone_id": "zone-ws1", "ingest_mode": "http", "status": "online", "simulated": True},
+        {"id": "dev-esp32-02", "device_id": "esp32-line1-st2", "name": "ESP32 Nodo Estación 2 (Corriente/Ciclo)", "type": "esp32", "station_id": "st-2", "zone_id": "zone-ws2", "ingest_mode": "http", "status": "online", "simulated": True},
+        {"id": "dev-esp32-03", "device_id": "esp32-line1-st3", "name": "ESP32 Nodo Estación 3 (PIR Presencia)", "type": "esp32", "station_id": "st-3", "zone_id": "zone-ws3", "ingest_mode": "mqtt", "status": "online", "simulated": True},
+        {"id": "dev-esp32-04", "device_id": "esp32-line1-st4", "name": "ESP32 Nodo Estación 4 (Andon/Empaque)", "type": "esp32", "station_id": "st-4", "zone_id": "zone-ws4", "ingest_mode": "http", "status": "online", "simulated": True},
+        {"id": "dev-cam-01", "device_id": "cam-overhead-line1", "name": "Cámara Cenital Visión Local (OpenCV)", "type": "camera_vision", "station_id": None, "zone_id": "zone-transit", "ingest_mode": "http", "status": "online", "simulated": True},
+        {"id": "dev-env-01", "device_id": "env-dht22-ambient", "name": "ESP32 Sensor Ambiental (DHT22)", "type": "esp32", "station_id": "st-2", "zone_id": "zone-ws2", "ingest_mode": "mqtt", "status": "online", "simulated": True}
     ]
     for dev in devices_data:
         stmt = select(DBDevice).where(DBDevice.id == dev["id"])
         res = await session.execute(stmt)
-        if not res.scalar_one_or_none():
+        existing = res.scalar_one_or_none()
+        if not existing:
             session.add(DBDevice(**dev))
+        elif not existing.simulated:
+            existing.simulated = True  # bases creadas antes de la columna
 
     # 5. Stop Reasons Catalog
     stop_reasons = [
@@ -206,6 +252,11 @@ async def seed_default_data(session: AsyncSession):
         {"id": "sr-5", "code": "CAL-01", "category": "Calidad", "description": "Ajuste de parámetros por defecto de soldadura", "is_authorized_by_default": True},
         {"id": "sr-6", "code": "OPE-01", "category": "Planificado", "description": "Cambio de turno o junta de seguridad de 5 minutos", "is_authorized_by_default": True},
         {"id": "sr-7", "code": "OPE-02", "category": "Planificado", "description": "Comedor o receso programado", "is_authorized_by_default": True},
+        # Causas que pide el documento del hackathon
+        {"id": "sr-8", "code": "MOD-01", "category": "Cambio de modelo", "description": "Cambio de modelo / set-up", "is_authorized_by_default": True},
+        {"id": "sr-9", "code": "BRK-01", "category": "Planificado", "description": "Break programado", "is_authorized_by_default": True},
+        {"id": "sr-10", "code": "OTR-01", "category": "Otro", "description": "Otro (describir en notas)", "is_authorized_by_default": True},
+        {"id": "sr-11", "code": "PEND-01", "category": "Pendiente", "description": "Paro por pulsador · pendiente de causa", "is_authorized_by_default": False},
     ]
     for sr in stop_reasons:
         stmt = select(DBStopReason).where(DBStopReason.id == sr["id"])
@@ -223,6 +274,8 @@ async def seed_default_data(session: AsyncSession):
         {"id": "rule-machine-stopped", "rule_id": "machine_stopped", "name": "Máquina Detenida sin Paro Declarado", "rule_type": "machine_stopped", "threshold": 90.0, "window_seconds": 90, "severity": "warning", "enabled": True, "cooldown_seconds": 90, "description": "Presencia detectada pero máquina sin registrar ciclos"},
         {"id": "rule-sensor-lost", "rule_id": "sensor_disconnected", "name": "Sensor o ESP32 sin Latido (Desconectado)", "rule_type": "sensor_disconnected", "threshold": 30.0, "window_seconds": 30, "severity": "critical", "enabled": True, "cooldown_seconds": 60, "description": "Sensor no reporta heartbeat en el intervalo de tolerancia"},
         {"id": "rule-env", "rule_id": "environment_out_of_bounds", "name": "Temperatura o Humedad Fuera de Rango", "rule_type": "environment_out_of_bounds", "threshold": 32.0, "window_seconds": 60, "severity": "warning", "enabled": True, "cooldown_seconds": 180, "description": "Condiciones ambientales exceden norma ESD o confort en línea"},
+        {"id": "rule-discrepancy", "rule_id": "sensor_discrepancy", "name": "Discrepancia entre Sensores", "rule_type": "sensor_discrepancy", "threshold": 15.0, "window_seconds": 60, "severity": "warning", "enabled": True, "cooldown_seconds": 120, "description": "RFID, cámara y CSI no coinciden sobre si hay alguien en la estación"},
+        {"id": "rule-repeat", "rule_id": "repeated_visits", "name": "Visitas Repetidas a una Zona", "rule_type": "repeated_visits", "threshold": 4.0, "window_seconds": 600, "severity": "warning", "enabled": True, "cooldown_seconds": 300, "description": "Un track entra muchas veces a la misma zona de apoyo en la ventana (surtido deficiente)"},
         {"id": "rule-material", "rule_id": "material_missing", "name": "Falta de Material Solicitada por Andon", "rule_type": "material_missing", "threshold": 60.0, "window_seconds": 60, "severity": "warning", "enabled": True, "cooldown_seconds": 60, "description": "Pulsación de botón de material sin atender en 60 segundos"}
     ]
     for ar in alert_rules:

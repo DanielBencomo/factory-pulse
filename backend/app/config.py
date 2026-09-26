@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Seed & Simulation
     SEED_ON_STARTUP: bool = True
     SIMULATOR_SPEED: float = 1.0
+    # "demo": arranca el simulador. "live": no simula nada y espera a los ESP32.
+    START_MODE: str = os.getenv("START_MODE", "demo")
+    # Segundos sin latido para considerar un dispositivo sin señal.
+    DEVICE_TIMEOUT_SECONDS: int = int(os.getenv("DEVICE_TIMEOUT_SECONDS", "30"))
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="allow")
 

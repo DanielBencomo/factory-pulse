@@ -196,6 +196,40 @@ async def close_stop(stop_id: str, ended_at: Optional[datetime] = None, session:
         updated_at=stop.updated_at
     )
 
+@router.put("/stops/{stop_id}", response_model=StopResponse)
+async def update_stop(stop_id: str, patch: StopUpdate, session: AsyncSession = Depends(get_db)):
+    """
+    Corrige o justifica un paro (p. ej. el que abrió un pulsador con causa pendiente).
+    Al marcarlo como justificado, su intervalo completo deja de contar como espera.
+    """
+    stop = (await session.execute(select(DBStop).where(DBStop.id == stop_id))).scalar_one_or_none()
+    if not stop:
+        raise HTTPException(status_code=404, detail="Paro no encontrado")
+    data = patch.model_dump(exclude_unset=True)
+    if "reason_code" in data:
+        reason = (await session.execute(select(DBStopReason).where(DBStopReason.code == data["reason_code"]))).scalar_one_or_none()
+        if not reason:
+            raise HTTPException(status_code=422, detail=f"Causa desconocida: {data['reason_code']}")
+        data.setdefault("reason", reason.description)
+    if "ended_at" in data and data["ended_at"] is not None and data["ended_at"] < stop.started_at:
+        raise HTTPException(status_code=400, detail="La fecha de fin no puede ser anterior al inicio del paro")
+    before = {"reason_code": stop.reason_code, "is_authorized": stop.is_authorized}
+    for k, v in data.items():
+        setattr(stop, k, v)
+    if stop.ended_at:
+        stop.duration_seconds = (stop.ended_at - stop.started_at).total_seconds()
+    stop.updated_at = datetime.utcnow()
+    session.add(DBAuditLog(action="UPDATE_STOP", actor=data.get("author") or stop.author, entity_type="STOP", entity_id=stop_id, details={"before": before, "after": {k: str(v) for k, v in data.items()}}))
+    await session.commit()
+    await session.refresh(stop)
+    await ws_manager.broadcast({"type": "STOP_UPDATED", "action": "updated", "stop_id": stop.id})
+    return StopResponse(
+        id=stop.id, scope_type=StopScope(stop.scope_type), scope_id=stop.scope_id, reason=stop.reason, reason_code=stop.reason_code,
+        author=stop.author, started_at=stop.started_at, ended_at=stop.ended_at, duration_seconds=stop.duration_seconds,
+        is_authorized=stop.is_authorized, status=stop.status, notes=stop.notes, created_at=stop.created_at, updated_at=stop.updated_at,
+    )
+
+
 @router.get("/stops/reasons")
 async def list_stop_reasons(session: AsyncSession = Depends(get_db)):
     stmt = select(DBStopReason)

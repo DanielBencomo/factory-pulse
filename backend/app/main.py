@@ -23,6 +23,13 @@ from app.api.routes_alerts import router as alerts_router
 from app.api.routes_simulator import router as simulator_router
 from app.api.routes_modules import router as modules_router
 from app.api.routes_export import router as export_router
+from app.api.routes_layout import router as layout_router
+from app.api.routes_tracks import router as tracks_router
+from app.api.routes_analytics import router as analytics_router
+from app.api.routes_signals import router as signals_router
+from app.api.routes_recordings import router as recordings_router
+from app.live.processor import live_processor
+from app.live.replay import replayer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,14 +45,22 @@ async def lifespan(app: FastAPI):
     # Start MQTT Adapter (if enabled)
     mqtt_adapter.start()
     
-    # Auto-start Simulator in background for interactive demo experience
-    simulator.start(speed=1.0)
+    # Demo: el simulador alimenta el tablero. Live: se espera a los dispositivos reales.
+    if settings.START_MODE == "live":
+        simulator.mode = "live"
+        logger.info("Modo EN VIVO: simulador apagado, esperando dispositivos")
+    else:
+        simulator.start(speed=settings.SIMULATOR_SPEED)
+    # Procesa datos reales (en vivo / reproducción): posiciones, estados, reglas.
+    live_processor.start()
     logger.info("Factory Pulse is ready and listening!")
     
     yield
     
     logger.info("Shutting down Factory Pulse...")
     simulator.pause()
+    replayer.stop()
+    live_processor.stop()
     mqtt_adapter.stop()
 
 app = FastAPI(
@@ -78,6 +93,11 @@ app.include_router(alerts_router, prefix=settings.API_V1_STR, tags=["Alerts"])
 app.include_router(simulator_router, prefix=settings.API_V1_STR, tags=["Simulator"])
 app.include_router(modules_router, prefix=settings.API_V1_STR, tags=["Modules"])
 app.include_router(export_router, prefix=settings.API_V1_STR, tags=["Export"])
+app.include_router(layout_router, prefix=settings.API_V1_STR, tags=["Layout"])
+app.include_router(tracks_router, prefix=settings.API_V1_STR, tags=["Tracks"])
+app.include_router(analytics_router, prefix=settings.API_V1_STR, tags=["Analytics"])
+app.include_router(signals_router, prefix=settings.API_V1_STR, tags=["Signals"])
+app.include_router(recordings_router, prefix=settings.API_V1_STR, tags=["Recordings"])
 
 # WebSocket Endpoint
 @app.websocket("/ws")

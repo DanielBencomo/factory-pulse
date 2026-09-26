@@ -1,41 +1,307 @@
 @import "tailwindcss";
 
-/* React Grid Layout Essential Styles */
+/*
+ * Factory Pulse — sistema visual
+ * Paneles blancos sobre gris cálido, un color de marca (azul petróleo) para
+ * navegación y acciones, naranja de seguridad solo para señalar, y colores de
+ * estado con contraste AA. Nada de gradientes, brillos ni animaciones decorativas.
+ */
+@theme {
+  --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --color-paper: #f1f0ec;
+  --color-surface: #ffffff;
+  --color-sunken: #ebeae5;
+  --color-ink: #17212b;
+  --color-ink-2: #3d4853;
+  --color-ink-3: #5d6974;
+  --color-ink-4: #7c8690;
+  --color-line: #dcdad3;
+  --color-line-2: #bdbab1;
+
+  --color-brand: #1f4e73;
+  --color-brand-deep: #173a57;
+  --color-brand-soft: #e4edf4;
+
+  --color-accent: #b34a14;
+  --color-accent-soft: #fbe8dc;
+  --color-ok: #2d7a4b;
+  --color-ok-soft: #e3f1e8;
+  --color-warn: #935d0f;
+  --color-warn-soft: #f8ecd6;
+  --color-bad: #b3261e;
+  --color-bad-soft: #f8e2df;
+  --color-info: #2a6199;
+  --color-info-soft: #e2ecf6;
+}
+
+@layer base {
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    margin: 0;
+    background: var(--color-paper);
+  }
+  ::selection {
+    background: var(--color-brand-soft);
+    color: var(--color-ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 1px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--color-brand);
+  }
+}
+
+@layer components {
+  .panel {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: 3px;
+  }
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--color-line);
+    min-height: 44px;
+  }
+  .panel-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    font-stretch: 88%;
+    letter-spacing: 0.005em;
+    color: var(--color-ink);
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 11px;
+    border: 1px solid var(--color-line-2);
+    border-radius: 3px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-size: 12.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 120ms, border-color 120ms;
+  }
+  .btn:hover {
+    background: var(--color-sunken);
+  }
+  .btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .btn-primary {
+    background: var(--color-brand);
+    border-color: var(--color-brand);
+    color: #fff;
+  }
+  .btn-primary:hover {
+    background: var(--color-brand-deep);
+  }
+  .btn-danger {
+    background: var(--color-bad);
+    border-color: var(--color-bad);
+    color: #fff;
+  }
+  .btn-danger:hover {
+    background: #951f18;
+  }
+  .btn-ghost {
+    background: transparent;
+    border-color: transparent;
+  }
+  .btn-ghost:hover {
+    background: var(--color-sunken);
+  }
+  .btn-icon {
+    width: 30px;
+    padding: 0;
+  }
+  .btn-sm {
+    height: 24px;
+    padding: 0 8px;
+    font-size: 11.5px;
+  }
+
+  .field {
+    height: 30px;
+    width: 100%;
+    padding: 0 8px;
+    border: 1px solid var(--color-line-2);
+    border-radius: 3px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-size: 12.5px;
+  }
+  textarea.field {
+    height: auto;
+    padding: 6px 8px;
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--color-brand);
+    box-shadow: 0 0 0 2px var(--color-brand-soft);
+  }
+  .label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--color-ink-2);
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    padding: 0 6px;
+    border: 1px solid var(--color-line-2);
+    border-radius: 2px;
+    background: var(--color-surface);
+    color: var(--color-ink-2);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .chip-ok { color: var(--color-ok); border-color: color-mix(in srgb, var(--color-ok) 35%, transparent); background: var(--color-ok-soft); }
+  .chip-warn { color: var(--color-warn); border-color: color-mix(in srgb, var(--color-warn) 35%, transparent); background: var(--color-warn-soft); }
+  .chip-bad { color: var(--color-bad); border-color: color-mix(in srgb, var(--color-bad) 35%, transparent); background: var(--color-bad-soft); }
+  .chip-info { color: var(--color-info); border-color: color-mix(in srgb, var(--color-info) 35%, transparent); background: var(--color-info-soft); }
+  .chip-accent { color: var(--color-accent); border-color: color-mix(in srgb, var(--color-accent) 40%, transparent); background: var(--color-accent-soft); }
+  .chip-brand { color: var(--color-brand); border-color: color-mix(in srgb, var(--color-brand) 35%, transparent); background: var(--color-brand-soft); }
+  .chip-muted { color: var(--color-ink-3); border-color: var(--color-line); background: var(--color-sunken); }
+
+  .dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* Control segmentado (modo, pestañas) */
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--color-line-2);
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--color-surface);
+  }
+  .seg > button {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-ink-2);
+    border-right: 1px solid var(--color-line);
+    cursor: pointer;
+  }
+  .seg > button:last-child {
+    border-right: 0;
+  }
+  .seg > button:hover {
+    background: var(--color-sunken);
+  }
+  .seg > button[aria-pressed="true"] {
+    background: var(--color-brand);
+    color: #fff;
+  }
+
+  /* Filas clave–valor */
+  .kv {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--color-line);
+    font-size: 12.5px;
+  }
+  .kv:last-child {
+    border-bottom: 0;
+  }
+  .kv > dt {
+    color: var(--color-ink-3);
+  }
+  .kv > dd {
+    color: var(--color-ink);
+    text-align: right;
+  }
+}
+
+/* Transiciones del plano (zoom a estación) */
+.fp-fade {
+  transition: opacity 280ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .fp-fade {
+    transition: none;
+  }
+}
+
+/* React Grid Layout */
 .react-grid-layout {
   position: relative;
   transition: height 200ms ease;
 }
-
 .react-grid-item {
   transition: all 200ms ease;
   transition-property: left, top, width, height;
 }
-
 .react-grid-item.cssTransforms {
   transition-property: transform, width, height;
 }
-
 .react-grid-item.resizing {
   z-index: 30;
   will-change: width, height;
 }
-
 .react-grid-item.react-draggable-dragging {
   transition: none;
   z-index: 40;
   will-change: transform;
 }
-
 .react-grid-item.dropping {
   visibility: hidden;
 }
-
 .react-grid-item > .react-resizable-handle {
   position: absolute;
   width: 20px;
   height: 20px;
 }
-
 .react-grid-item > .react-resizable-handle::after {
   content: "";
   position: absolute;
@@ -43,31 +309,24 @@
   bottom: 4px;
   width: 6px;
   height: 6px;
-  border-right: 2px solid rgba(148, 163, 184, 0.6);
-  border-bottom: 2px solid rgba(148, 163, 184, 0.6);
+  border-right: 2px solid var(--color-line-2);
+  border-bottom: 2px solid var(--color-line-2);
 }
-
 .react-grid-item > .react-resizable-handle.react-resizable-handle-se {
   bottom: 0;
   right: 0;
   cursor: se-resize;
 }
 
-/* Custom Scrollbar for industrial dashboard aesthetic */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #090d16;
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: var(--color-line-2);
+  border-radius: 4px;
+  border: 2px solid var(--color-paper);
 }

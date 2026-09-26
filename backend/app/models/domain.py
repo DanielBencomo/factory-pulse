@@ -33,6 +33,7 @@ class StationStatus(str, Enum):
     WAITING_MATERIAL = "waiting_material"
     UNATTENDED = "unattended"
     STOPPED = "stopped"
+    PRESENT = "present"  # hay operador pero no hay dato de proceso
     UNKNOWN = "unknown"
 
 class StopScope(str, Enum):

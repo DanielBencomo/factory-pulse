@@ -1,220 +1,226 @@
 /*
  * =========================================================================================
- * FACTORY PULSE — ESP32 INDUSTRIAL NODE FIRMWARE
+ * FACTORY PULSE — FIRMWARE DE NODO ESP32
  * =========================================================================================
- * 
- * Target: ESP32 Dev Module (WROOM-32)
- * Framework: Arduino / ESP-IDF
- * Telemetría: HTTP POST JSON a la API Factory Pulse / MQTT
- * 
- * DIAGRAMA DE CONEXIONES Y CABLEADO REAL:
+ *
+ * Target: ESP32 Dev Module (WROOM-32) · Arduino core
+ * Envío: HTTP POST JSON a la API de Factory Pulse
+ *
+ * 1. Registra el dispositivo en la app (Dispositivos → Registrar dispositivo).
+ *    Queda "esperando conexión".
+ * 2. Copia aquí el bloque de configuración que muestra la app para ese dispositivo.
+ * 3. Al primer latido la app lo marca "conectado". Si el ID no estaba registrado,
+ *    aparece como "detectado sin registrar" para asignarlo.
+ *
+ * Activa solo los módulos que tenga físicamente este nodo (ENABLE_*).
+ *
+ * CABLEADO
  * -----------------------------------------------------------------------------------------
- * Componente / Sensor     | Pin ESP32 | Modo / Resistencia
+ * Componente                 | Pin ESP32        | Notas
  * -----------------------------------------------------------------------------------------
- * Botón Andon / Paro      | GPIO 4    | INPUT_PULLUP (Pulsador normalmente abierto a GND)
- * Botón Material Solicitud| GPIO 5    | INPUT_PULLUP (Pulsador normalmente abierto a GND)
- * Sensor PIR Presencia    | GPIO 18   | INPUT (Salida digital HC-SR501 / RCWL-0516)
- * Sensor Ciclo Máquina    | GPIO 19   | INPUT_PULLUP (Optoacoplador PC817 a señal de PLC)
- * Sensor DHT22 (Temp/Hum) | GPIO 21   | INPUT + Resistencia 10k Pull-up a 3.3V
- * LED Estado Conexión     | GPIO 2    | OUTPUT (LED Onboard azul)
+ * RC522 (RFID 13.56 MHz)     | SCK 18, MISO 19, | 3.3 V. Librería MFRC522 (miguelbalboa)
+ *                            | MOSI 23, SS 5,   |
+ *                            | RST 22           |
+ * Pulsador paro / andon      | GPIO 4           | INPUT_PULLUP, normalmente abierto a GND
+ * Pulsador solicitar material| GPIO 15          | INPUT_PULLUP
+ * Pulsador "pieza terminada" | GPIO 13          | INPUT_PULLUP · da dato de proceso con el kit
+ * PIR presencia (opcional)   | GPIO 27          | HC-SR501 / RCWL-0516
+ * Pulso de ciclo de máquina  | GPIO 26          | Optoacoplador PC817 desde salida de PLC
+ * LED de estado              | GPIO 2           | Encendido = Wi-Fi conectado
  * =========================================================================================
  */
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 
-// --- CONFIGURACIÓN DE RED Y SERVIDOR ---
-const char* WIFI_SSID = "PLANTA_INDUSTRIAL_WIFI";
-const char* WIFI_PASS = "FactoryPulse2026";
-const char* API_EVENTS_URL = "http://192.168.1.100:8000/api/events";
-const char* API_HEARTBEAT_URL = "http://192.168.1.100:8000/api/devices/esp32-line1-st1/heartbeat";
+// ---------- Configuración (cópiala desde la app) ----------
+#define WIFI_SSID    "NOMBRE_DE_TU_RED"
+#define WIFI_PASS    "CLAVE_DE_TU_RED"
+#define SERVER_BASE  "http://192.168.1.100:8000"
+#define DEVICE_ID    "esp32-st-1-rfid"
+#define STATION_ID   "st-1"
+#define FIRMWARE     "fp-esp32-1.1"
 
-const char* DEVICE_ID = "esp32-line1-st1";
-const char* STATION_ID = "st-1";
+// ---------- Módulos presentes en este nodo ----------
+#define ENABLE_RFID    1
+#define ENABLE_BUTTONS 1
+#define ENABLE_PIR     0
+#define ENABLE_CYCLE   0
+// Sin sensor de proceso, un pulsador por pieza terminada permite medir ritmo,
+// productivo y espera con el hardware del kit del hackathon.
+#define ENABLE_PIECE_BUTTON 1
 
-// --- PINES DE ENTRADA ---
-const int PIN_BTN_ANDON = 4;
-const int PIN_BTN_MAT = 5;
-const int PIN_PIR_PRESENCE = 18;
-const int PIN_OPTO_CYCLE = 19;
-const int PIN_LED_STATUS = 2;
+const unsigned long HEARTBEAT_INTERVAL_MS = 10000;  // la app espera un latido cada 10 s
 
-// --- VARIABLES DE ESTADO Y CONTROL ---
+#if ENABLE_RFID
+#include <SPI.h>
+#include <MFRC522.h>
+const int PIN_RFID_SS = 5;
+const int PIN_RFID_RST = 22;
+MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
+String lastTag = "";
+unsigned long lastTagAt = 0;
+#endif
+
+const int PIN_BTN_STOP = 4;
+const int PIN_BTN_MATERIAL = 15;
+const int PIN_BTN_PIECE = 13;
+unsigned long lastPieceAt = 0;
+const int PIN_PIR = 27;
+const int PIN_CYCLE = 26;
+const int PIN_LED = 2;
+
 unsigned long lastHeartbeat = 0;
-const unsigned long HEARTBEAT_INTERVAL_MS = 15000; // Latido cada 15s
+bool lastPresence = false;
+volatile unsigned long cyclePulses = 0;
+unsigned long lastCycleAt = 0;
 
-unsigned long lastCycleTime = 0;
-volatile int cycleCount = 0;
-bool lastPresenceState = false;
+void IRAM_ATTR onCyclePulse() { cyclePulses++; }
 
-// Interrupción para conteo de ciclo de máquina
-void IRAM_ATTR onCyclePulse() {
-  cycleCount++;
+String eventId(const char* kind) {
+  return String(DEVICE_ID) + "-" + kind + "-" + String(millis());
 }
 
-void setup() {
-  Serial.begin(115200);
-  pinMode(PIN_BTN_ANDON, INPUT_PULLUP);
-  pinMode(PIN_BTN_MAT, INPUT_PULLUP);
-  pinMode(PIN_PIR_PRESENCE, INPUT);
-  pinMode(PIN_OPTO_CYCLE, INPUT_PULLUP);
-  pinMode(PIN_LED_STATUS, OUTPUT);
-
-  attachInterrupt(digitalPinToInterrupt(PIN_OPTO_CYCLE), onCyclePulse, FALLING);
-
-  Serial.println("\n[Factory Pulse ESP32] Iniciando nodo...");
-  connectWiFi();
-}
-
-void loop() {
-  // 1. Mantener conexión Wi-Fi activa
-  if (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(PIN_LED_STATUS, LOW);
-    connectWiFi();
-  } else {
-    digitalWrite(PIN_LED_STATUS, HIGH);
-  }
-
-  // 2. Comprobar Botón de Emergencia / SOS (GPIO 4)
-  if (digitalRead(PIN_BTN_ANDON) == LOW) {
-    delay(50); // Debounce
-    if (digitalRead(PIN_BTN_ANDON) == LOW) {
-      Serial.println("[EVENTO] Boton SOS/Paro presionado!");
-      sendButtonEvent("sos", "Paro de emergencia activado por boton físico");
-      while (digitalRead(PIN_BTN_ANDON) == LOW) { delay(10); }
-    }
-  }
-
-  // 3. Comprobar Botón de Material (GPIO 5)
-  if (digitalRead(PIN_BTN_MAT) == LOW) {
-    delay(50); // Debounce
-    if (digitalRead(PIN_BTN_MAT) == LOW) {
-      Serial.println("[EVENTO] Solicitud de material Andon presionado!");
-      sendButtonEvent("request_material", "Solicitud de lote de componentes");
-      while (digitalRead(PIN_BTN_MAT) == LOW) { delay(10); }
-    }
-  }
-
-  // 4. Comprobar Sensor de Presencia PIR (GPIO 18)
-  bool currentPresence = digitalRead(PIN_PIR_PRESENCE) == HIGH;
-  if (currentPresence != lastPresenceState) {
-    lastPresenceState = currentPresence;
-    sendPresenceEvent(currentPresence);
-  }
-
-  // 5. Emitir Ciclo de Producción acumulado
-  if (cycleCount > 0) {
-    int countToSend = cycleCount;
-    cycleCount = 0;
-    sendCycleEvent(countToSend);
-  }
-
-  // 6. Enviar Heartbeat periódico
-  if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-    lastHeartbeat = millis();
-    sendHeartbeat();
-  }
-
-  delay(20);
-}
-
-void connectWiFi() {
-  Serial.print("Conectando a Wi-Fi: ");
-  Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[Wi-Fi] Conectado! IP: " + WiFi.localIP().toString());
-  } else {
-    Serial.println("\n[Wi-Fi] Tiempo de espera agotado. Reintentando...");
-  }
-}
-
-void sendButtonEvent(const char* action, const char* notes) {
-  if (WiFi.status() != WL_CONNECTED) return;
+// Envía un evento. "payload" es el contenido JSON sin llaves.
+int postEvent(const char* type, const char* kind, const String& payload) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
   HTTPClient http;
-  http.begin(API_EVENTS_URL);
+  http.begin(String(SERVER_BASE) + "/api/events");
   http.addHeader("Content-Type", "application/json");
-
-  String json = "{";
-  json += "\"event_id\":\"esp32-" + String(DEVICE_ID) + "-" + String(millis()) + "\",";
-  json += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  json += "\"source_id\":\"esp32_gpio\",";
-  json += "\"type\":\"button_press\",";
-  json += "\"quality\":1.0,";
-  json += "\"mode\":\"live\",";
-  json += "\"payload\":{";
-  json += "\"station_id\":\"" + String(STATION_ID) + "\",";
-  json += "\"button_name\":\"physical_button\",";
-  json += "\"action\":\"" + String(action) + "\",";
-  json += "\"notes\":\"" + String(notes) + "\"";
-  json += "}}";
-
-  int httpCode = http.POST(json);
-  Serial.printf("[HTTP POST Button] Codigo: %d\n", httpCode);
+  String json = "{\"event_id\":\"" + eventId(kind) + "\",\"device_id\":\"" DEVICE_ID "\",\"source_id\":\"esp32_" + String(kind) +
+                "\",\"type\":\"" + String(type) + "\",\"quality\":1.0,\"mode\":\"live\",\"payload\":{\"station_id\":\"" STATION_ID "\"," + payload + "}}";
+  int code = http.POST(json);
+  Serial.printf("[%s] HTTP %d\n", type, code);
   http.end();
-}
-
-void sendPresenceEvent(bool present) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  http.begin(API_EVENTS_URL);
-  http.addHeader("Content-Type", "application/json");
-
-  String json = "{";
-  json += "\"event_id\":\"esp32-pir-" + String(DEVICE_ID) + "-" + String(millis()) + "\",";
-  json += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  json += "\"source_id\":\"esp32_pir\",";
-  json += "\"type\":\"presence\",";
-  json += "\"quality\":1.0,";
-  json += "\"mode\":\"live\",";
-  json += "\"payload\":{";
-  json += "\"station_id\":\"" + String(STATION_ID) + "\",";
-  json += "\"present\":" + String(present ? "true" : "false") + ",";
-  json += "\"confidence\":0.95";
-  json += "}}";
-
-  int httpCode = http.POST(json);
-  Serial.printf("[HTTP POST Presence] Codigo: %d\n", httpCode);
-  http.end();
-}
-
-void sendCycleEvent(int parts) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  http.begin(API_EVENTS_URL);
-  http.addHeader("Content-Type", "application/json");
-
-  String json = "{";
-  json += "\"event_id\":\"esp32-cyc-" + String(DEVICE_ID) + "-" + String(millis()) + "\",";
-  json += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  json += "\"source_id\":\"esp32_opto\",";
-  json += "\"type\":\"cycle\",";
-  json += "\"quality\":1.0,";
-  json += "\"mode\":\"live\",";
-  json += "\"payload\":{";
-  json += "\"station_id\":\"" + String(STATION_ID) + "\",";
-  json += "\"cycle_time_seconds\":45.0,";
-  json += "\"is_good_piece\":true,";
-  json += "\"total_parts\":" + String(parts);
-  json += "}}";
-
-  int httpCode = http.POST(json);
-  Serial.printf("[HTTP POST Cycle] Codigo: %d\n", httpCode);
-  http.end();
+  return code;
 }
 
 void sendHeartbeat() {
   if (WiFi.status() != WL_CONNECTED) return;
   HTTPClient http;
-  http.begin(API_HEARTBEAT_URL);
+  http.begin(String(SERVER_BASE) + "/api/devices/" DEVICE_ID "/heartbeat");
   http.addHeader("Content-Type", "application/json");
-  int httpCode = http.POST("{}");
-  Serial.printf("[HTTP Heartbeat] Codigo: %d\n", httpCode);
+  String body = "{\"firmware\":\"" FIRMWARE "\",\"rssi\":" + String(WiFi.RSSI()) + ",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
+  int code = http.POST(body);
+  Serial.printf("[latido] HTTP %d\n", code);
   http.end();
+}
+
+void connectWiFi() {
+  Serial.printf("Conectando a %s", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) {
+    delay(500);
+    Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWi-Fi OK, IP " + WiFi.localIP().toString());
+    sendHeartbeat();  // aviso inmediato: la app pasa de "esperando" a "conectado"
+    lastHeartbeat = millis();
+  } else {
+    Serial.println("\nSin Wi-Fi, reintentando");
+  }
+}
+
+bool pressed(int pin) {
+  if (digitalRead(pin) != LOW) return false;
+  delay(40);  // antirrebote
+  if (digitalRead(pin) != LOW) return false;
+  while (digitalRead(pin) == LOW) delay(10);
+  return true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIN_LED, OUTPUT);
+#if ENABLE_BUTTONS
+  pinMode(PIN_BTN_STOP, INPUT_PULLUP);
+  pinMode(PIN_BTN_MATERIAL, INPUT_PULLUP);
+#endif
+#if ENABLE_PIR
+  pinMode(PIN_PIR, INPUT);
+#endif
+#if ENABLE_PIECE_BUTTON
+  pinMode(PIN_BTN_PIECE, INPUT_PULLUP);
+  lastPieceAt = millis();
+#endif
+#if ENABLE_CYCLE
+  pinMode(PIN_CYCLE, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_CYCLE), onCyclePulse, FALLING);
+  lastCycleAt = millis();
+#endif
+#if ENABLE_RFID
+  SPI.begin();
+  rfid.PCD_Init();
+#endif
+  Serial.println("\n[Factory Pulse] Nodo " DEVICE_ID);
+  connectWiFi();
+}
+
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    digitalWrite(PIN_LED, LOW);
+    connectWiFi();
+    return;
+  }
+  digitalWrite(PIN_LED, HIGH);
+
+#if ENABLE_RFID
+  // Checkpoint: cada tarjeta nueva en la estación genera una entrada.
+  if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+    String tag = "";
+    for (byte i = 0; i < rfid.uid.size; i++) {
+      if (i) tag += ":";
+      if (rfid.uid.uidByte[i] < 0x10) tag += "0";
+      tag += String(rfid.uid.uidByte[i], HEX);
+    }
+    tag.toUpperCase();
+    if (tag != lastTag || millis() - lastTagAt > 3000) {  // ignora la misma tarjeta sostenida
+      postEvent("zone_enter", "rfid", "\"tag_id\":\"" + tag + "\",\"source\":\"rfid_checkpoint\"");
+      lastTag = tag;
+      lastTagAt = millis();
+    }
+    rfid.PICC_HaltA();
+  }
+#endif
+
+#if ENABLE_BUTTONS
+  if (pressed(PIN_BTN_STOP)) postEvent("button_press", "btn", "\"action\":\"stop_line\",\"button_name\":\"paro\"");
+  if (pressed(PIN_BTN_MATERIAL)) postEvent("button_press", "btn", "\"action\":\"request_material\",\"button_name\":\"material\"");
+#endif
+
+#if ENABLE_PIECE_BUTTON
+  if (pressed(PIN_BTN_PIECE)) {
+    float cycle = (millis() - lastPieceAt) / 1000.0;
+    lastPieceAt = millis();
+    postEvent("cycle", "pza", "\"cycle_time_seconds\":" + String(cycle, 1) + ",\"is_good_piece\":true,\"total_parts\":1,\"source\":\"button\"");
+  }
+#endif
+
+#if ENABLE_PIR
+  bool presence = digitalRead(PIN_PIR) == HIGH;
+  if (presence != lastPresence) {
+    lastPresence = presence;
+    postEvent("presence", "pir", String("\"present\":") + (presence ? "true" : "false") + ",\"confidence\":0.9");
+  }
+#endif
+
+#if ENABLE_CYCLE
+  // Un evento por pieza, con el tiempo de ciclo medido entre pulsos.
+  unsigned long pulses = cyclePulses;
+  if (pulses > 0) {
+    cyclePulses = 0;
+    float cycle = (millis() - lastCycleAt) / 1000.0 / pulses;
+    lastCycleAt = millis();
+    for (unsigned long i = 0; i < pulses; i++) {
+      postEvent("cycle", "cyc", "\"cycle_time_seconds\":" + String(cycle, 1) + ",\"is_good_piece\":true,\"total_parts\":1");
+    }
+  }
+#endif
+
+  if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+    lastHeartbeat = millis();
+    sendHeartbeat();
+  }
+  delay(20);
 }

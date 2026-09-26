@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,8 @@ from app.models.db_models import DBEvent
 from app.models.schemas import EventIngest, EventResponse
 from app.models.domain import EventType, EventMode
 from app.ws.manager import ws_manager
+from app.devices.registry import touch_device
+from app.live.effects import apply_event_effects
 
 router = APIRouter()
 
@@ -38,11 +40,16 @@ async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(ge
             mode=EventMode(existing.mode)
         )
 
+    occurred = event_in.occurred_at or datetime.utcnow()
+    if occurred.tzinfo is not None:
+        # Todo se guarda en UTC sin zona; un "…Z" del dispositivo no debe mezclarse con horas locales.
+        occurred = occurred.astimezone(timezone.utc).replace(tzinfo=None)
+
     db_event = DBEvent(
         event_id=event_in.event_id,
         device_id=event_in.device_id,
         source_id=event_in.source_id or "api_http",
-        occurred_at=event_in.occurred_at or datetime.utcnow(),
+        occurred_at=occurred,
         received_at=datetime.utcnow(),
         type=event_in.type.value,
         payload=event_in.payload,
@@ -50,8 +57,23 @@ async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(ge
         mode=event_in.mode.value
     )
     session.add(db_event)
+    if event_in.device_id and db_event.mode == "live":
+        # Un evento real también cuenta como señal de vida del dispositivo.
+        await touch_device(session, event_in.device_id)
+    effect = await apply_event_effects(session, db_event) if db_event.mode == "live" else None
     await session.commit()
     await session.refresh(db_event)
+    if effect:
+        await ws_manager.broadcast({"type": effect})
+
+    # Las posiciones llegan varias veces por segundo: el procesador en vivo difunde
+    # un resumen por segundo, así que no se reenvían una por una.
+    if db_event.type == "position":
+        return EventResponse(
+            id=db_event.id, event_id=db_event.event_id, device_id=db_event.device_id, source_id=db_event.source_id,
+            occurred_at=db_event.occurred_at, received_at=db_event.received_at, type=EventType(db_event.type),
+            payload=db_event.payload, quality=db_event.quality, mode=EventMode(db_event.mode),
+        )
 
     # Broadcast via WebSocket
     await ws_manager.broadcast({

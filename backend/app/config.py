@@ -1,0 +1,36 @@
+import os
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List
+
+class Settings(BaseSettings):
+    PROJECT_NAME: str = "Factory Pulse"
+    VERSION: str = "1.0.0"
+    API_V1_STR: str = "/api"
+    
+    # Database
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./factory_pulse.db")
+    
+    # CORS
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "*"
+    ]
+    
+    # MQTT Configuration (Optional / Configurable)
+    MQTT_ENABLED: bool = os.getenv("MQTT_ENABLED", "false").lower() == "true"
+    MQTT_BROKER_HOST: str = os.getenv("MQTT_BROKER_HOST", "localhost")
+    MQTT_BROKER_PORT: int = int(os.getenv("MQTT_BROKER_PORT", "1883"))
+    MQTT_USERNAME: str = os.getenv("MQTT_USERNAME", "")
+    MQTT_PASSWORD: str = os.getenv("MQTT_PASSWORD", "")
+    MQTT_TOPIC_PREFIX: str = os.getenv("MQTT_TOPIC_PREFIX", "factory_pulse")
+    
+    # Seed & Simulation
+    SEED_ON_STARTUP: bool = True
+    SIMULATOR_SPEED: float = 1.0
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="allow")
+
+settings = Settings()

@@ -187,6 +187,15 @@ class VideoSource:
                 log(f"{exc}; reconexión inicial en {delay:.1f} s")
                 time.sleep(delay)
 
+    def _fit_frame(self, frame: Any) -> Any:
+        """Limit decoded frames to the configured processing dimensions."""
+        height, width = frame.shape[:2]
+        scale = min(1.0, self.width / width, self.height / height)
+        if scale < 1.0:
+            target = (max(1, round(width * scale)), max(1, round(height * scale)))
+            return self.cv2.resize(frame, target, interpolation=self.cv2.INTER_AREA)
+        return frame
+
     def open(self) -> None:
         cv2 = self.cv2
         self.close()
@@ -217,11 +226,11 @@ class VideoSource:
             return None
         ok, frame = self.cap.read()
         if ok and frame is not None:
-            return frame
+            return self._fit_frame(frame)
         if self._is_file:
             self.cap.set(self.cv2.CAP_PROP_POS_FRAMES, 0)
             ok, frame = self.cap.read()
-            return frame if ok else None
+            return self._fit_frame(frame) if ok else None
 
         attempts = 0
         while self.reconnect_attempts == 0 or attempts < self.reconnect_attempts:
@@ -233,7 +242,7 @@ class VideoSource:
                 self.open()
                 ok, frame = self.cap.read()
                 if ok and frame is not None:
-                    return frame
+                    return self._fit_frame(frame)
             except RuntimeError as exc:
                 log(str(exc))
         return None
@@ -1118,8 +1127,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iou", type=float, default=0.55)
     parser.add_argument("--image-size", type=int, default=640)
     parser.add_argument("--device", default=None, help="cpu, 0, 1…; vacío = selección automática")
-    parser.add_argument("--width", type=int, default=1280, help="ancho solicitado a webcam")
-    parser.add_argument("--height", type=int, default=720, help="alto solicitado a webcam")
+    parser.add_argument("--width", type=int, default=1280, help="ancho máximo de procesamiento; webcam solicita este ancho")
+    parser.add_argument("--height", type=int, default=720, help="alto máximo de procesamiento; webcam solicita este alto")
     parser.add_argument("--plant-width", type=float, default=8.0, help="ancho real del plano en metros")
     parser.add_argument("--plant-height", type=float, default=5.0, help="alto real del plano en metros")
     parser.add_argument("--calib", default=None, help="JSON de homografía existente")

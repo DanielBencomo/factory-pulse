@@ -2,6 +2,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import cv2
+import numpy as np
+
 from hardware.local_vision_provider import (
     EventPublisher,
     VideoSource,
@@ -14,6 +17,17 @@ from hardware.local_vision_provider import (
 
 
 class VisionProviderHelpersTest(unittest.TestCase):
+    def test_rtsp_frame_is_downscaled_to_configured_bounds(self):
+        source = VideoSource.__new__(VideoSource)
+        source.cv2 = cv2
+        source.width = 960
+        source.height = 960
+        frame = np.zeros((1440, 1440, 3), dtype=np.uint8)
+
+        resized = source._fit_frame(frame)
+
+        self.assertEqual(resized.shape, (960, 960, 3))
+
     def test_successful_heartbeat_marks_backend_available_without_people(self):
         publisher = EventPublisher("http://127.0.0.1:8000", "camera-test")
 

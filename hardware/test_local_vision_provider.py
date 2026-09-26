@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hardware.local_vision_provider import (
+    VideoSource,
     YoloByteTracker,
     build_parser,
     parse_source,
@@ -12,6 +13,20 @@ from hardware.local_vision_provider import (
 
 
 class VisionProviderHelpersTest(unittest.TestCase):
+    def test_live_source_retries_when_unavailable_at_startup(self):
+        with patch.object(VideoSource, "open", side_effect=[RuntimeError("offline"), None]) as opened:
+            with patch("hardware.local_vision_provider.time.sleep") as sleep:
+                source = VideoSource("rtsp://127.0.0.1:8554/live", reconnect_attempts=0)
+        self.assertEqual(opened.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+        source.close()
+
+    def test_probe_source_stops_after_one_failed_open(self):
+        with patch.object(VideoSource, "open", side_effect=RuntimeError("offline")) as opened:
+            with self.assertRaisesRegex(RuntimeError, "offline"):
+                VideoSource("rtsp://127.0.0.1:8554/live", reconnect_attempts=1)
+        opened.assert_called_once()
+
     def test_source_aliases_and_camera_index(self):
         self.assertEqual(parse_source("webcam"), 0)
         self.assertEqual(parse_source(" 2 "), 2)

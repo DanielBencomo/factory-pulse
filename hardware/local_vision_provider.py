@@ -171,7 +171,21 @@ class VideoSource:
         self.reconnect_attempts = reconnect_attempts
         self.cap: Any = None
         self._is_file = isinstance(source, str) and not is_network_source(source)
-        self.open()
+        self._open_with_retries()
+
+    def _open_with_retries(self) -> None:
+        attempts = 0
+        while True:
+            try:
+                self.open()
+                return
+            except RuntimeError as exc:
+                attempts += 1
+                if self._is_file or (self.reconnect_attempts > 0 and attempts >= self.reconnect_attempts):
+                    raise
+                delay = min(0.5 * attempts, 3.0)
+                log(f"{exc}; reconexión inicial en {delay:.1f} s")
+                time.sleep(delay)
 
     def open(self) -> None:
         cv2 = self.cv2
@@ -1161,7 +1175,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             args.width,
             args.height,
             args.rtsp_transport,
-            args.reconnect_attempts,
+            1 if args.probe_source else args.reconnect_attempts,
         )
         if args.probe_source:
             frame = video.read()

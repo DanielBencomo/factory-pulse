@@ -1,10 +1,11 @@
 import React from 'react';
-import { Map, BarChart3, Bell, Cpu, PencilRuler, Play, Ruler, Boxes, Download, History } from 'lucide-react';
+import { Map, BarChart3, Bell, Cpu, PencilRuler, Play, Ruler, Boxes, Download, History, Video } from 'lucide-react';
 
-export type Page = 'planta' | 'metricas' | 'eventos' | 'dispositivos' | 'layout';
+export type Page = 'planta' | 'camara' | 'metricas' | 'eventos' | 'dispositivos' | 'layout';
 
 export const PAGES: { id: Page; label: string; title: string; icon: React.FC<{ className?: string }> }[] = [
   { id: 'planta', label: 'Planta', title: 'Planta en vivo', icon: Map },
+  { id: 'camara', label: 'Cámara', title: 'Cámara en vivo', icon: Video },
   { id: 'metricas', label: 'Métricas', title: 'Métricas de la línea', icon: BarChart3 },
   { id: 'eventos', label: 'Paros y alertas', title: 'Paros y alertas', icon: Bell },
   { id: 'dispositivos', label: 'Dispositivos', title: 'Dispositivos y conexión', icon: Cpu },

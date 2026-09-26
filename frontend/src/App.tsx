@@ -325,6 +325,8 @@ export const App: React.FC = () => {
         </div>
       </div>
     );
+  } else if (page === 'camara') {
+    content = <VisionPanel mode={mode} />;
   } else if (page === 'metricas') {
     content = <MetricsPage analytics={analytics} lineName={lineName} />;
   } else if (page === 'eventos') {

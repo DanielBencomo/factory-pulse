@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, RefreshCw, Video, WifiOff } from 'lucide-react';
 import { SystemMode } from '../types';
 
@@ -28,6 +28,7 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
   const [reachable, setReachable] = useState(false);
   const [streamLoaded, setStreamLoaded] = useState(false);
   const [retry, setRetry] = useState(0);
+  const wasOnline = useRef(false);
 
   useEffect(() => {
     let stopped = false;
@@ -68,8 +69,17 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
     return `${streamUrl}${separator}session=${retry}`;
   }, [retry]);
 
-  const online = reachable && Boolean(health?.ready);
-  const statusLabel = online ? 'Visión activa' : reachable ? 'Iniciando visión' : 'Visión sin conexión';
+  const updatedAt = Date.parse(health?.updated_at ?? '');
+  const online = reachable && Boolean(health?.ready) && Number.isFinite(updatedAt) && Date.now() - updatedAt < 8_000;
+  const statusLabel = online ? 'Visión activa' : reachable ? 'Sin cuadros recientes' : 'Visión sin conexión';
+
+  useEffect(() => {
+    if (online && !wasOnline.current) {
+      setStreamLoaded(false);
+      setRetry((value) => value + 1);
+    }
+    wasOnline.current = online;
+  }, [online]);
 
   const restart = () => {
     setStreamLoaded(false);

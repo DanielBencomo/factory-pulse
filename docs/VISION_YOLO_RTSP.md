@@ -99,6 +99,12 @@ No guarde una URL con usuario o contraseña en Git. Escríbala sólo en la líne
 comandos local. Si TCP entrega demasiada latencia en una red estable, pruebe
 `--rtsp-transport udp`.
 
+El proveedor espera y reintenta la conexión si el teléfono está apagado al
+arrancar o se corta durante la transmisión (`--reconnect-attempts 0`, valor
+predeterminado). `--probe-source` hace un solo intento para dar un diagnóstico
+rápido. El dashboard marca la visión como desconectada cuando deja de recibir
+cuadros recientes y recupera el video cuando vuelve la señal.
+
 También se aceptan:
 
 ```powershell

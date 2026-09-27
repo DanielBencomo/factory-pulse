@@ -1,3 +1,4 @@
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,6 +29,36 @@ class VisionProviderHelpersTest(unittest.TestCase):
 
         self.assertEqual(resized.shape, (960, 960, 3))
 
+    def test_capture_keeps_only_newest_frame_for_consumer(self):
+        class FastCapture:
+            def __init__(self, owner):
+                self.owner = owner
+                self.index = 0
+
+            def read(self):
+                self.index += 1
+                frame = np.full((4, 4, 3), self.index, dtype=np.uint8)
+                if self.index == 3:
+                    self.owner._reader_stop.set()
+                return True, frame
+
+        source = VideoSource.__new__(VideoSource)
+        source.cv2 = cv2
+        source.width = 4
+        source.height = 4
+        source._reader_stop = threading.Event()
+        source._frame_condition = threading.Condition()
+        source._latest_frame = None
+        source._frame_sequence = 0
+        source._delivered_sequence = 0
+        source._is_file = False
+        source.cap = FastCapture(source)
+
+        source._capture_latest()
+        latest = source.read()
+
+        self.assertEqual(source._frame_sequence, 3)
+        self.assertEqual(int(latest[0, 0, 0]), 3)
     def test_successful_heartbeat_marks_backend_available_without_people(self):
         publisher = EventPublisher("http://127.0.0.1:8000", "camera-test")
 

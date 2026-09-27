@@ -46,9 +46,9 @@ pip install torch==2.13.0+cu130 torchvision==0.28.0+cu130 `
   --index-url https://download.pytorch.org/whl/cu130
 ```
 
-La página Cámara permite bajar el tamaño de los cuadros antes de dibujarlos y
-procesarlos. Para una cámara 1440p, empieza con 960 × 960 y un tamaño de modelo
-de 512; se puede bajar a 416 si aún necesitas más velocidad.
+Para reducir latencia, la captura RTSP lee continuamente y conserva solo el cuadro mas reciente; asi la deteccion no procesa una cola atrasada. La lectura FFmpeg tiene timeout efectivo de 3 segundos para que los cortes no bloqueen el proveedor durante 30 segundos.
+
+Para priorizar fluidez en una camara de 1440 x 1440 usa cuadros de proceso de 640 x 640, modelo de 416 y JPEG calidad 60. Esto reduce detalle y tamano transmitido al dashboard.
 
 ## Arranque completo
 
@@ -103,8 +103,8 @@ python hardware\local_vision_provider.py `
 python hardware\local_vision_provider.py `
   --source "rtsp://192.168.1.50:8554/live" `
   --rtsp-transport tcp `
-  --width 960 --height 960 `
-  --image-size 512 --device 0 `
+  --width 640 --height 640 `
+  --image-size 416 --jpeg-quality 60 --device 0 `
   --api http://127.0.0.1:8000 `
   --activate-live-mode
 ```

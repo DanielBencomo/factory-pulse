@@ -171,7 +171,15 @@ class VideoSource:
         self.reconnect_attempts = reconnect_attempts
         self.cap: Any = None
         self._is_file = isinstance(source, str) and not is_network_source(source)
+        self._frame_condition = threading.Condition()
+        self._latest_frame: Any = None
+        self._frame_sequence = 0
+        self._delivered_sequence = 0
+        self._reader_stop = threading.Event()
+        self._reader_thread: threading.Thread | None = None
         self._open_with_retries()
+        self._reader_thread = threading.Thread(target=self._capture_latest, name="vision-latest-frame", daemon=True)
+        self._reader_thread.start()
 
     def _open_with_retries(self) -> None:
         attempts = 0
@@ -198,20 +206,27 @@ class VideoSource:
 
     def open(self) -> None:
         cv2 = self.cv2
-        self.close()
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
         if is_rtsp_source(self.source):
             # OpenCV pasa estas opciones a FFmpeg. TCP suele ser más estable en Wi-Fi;
             # UDP se puede seleccionar para reducir latencia en una red confiable.
-            options = f"rtsp_transport;{self.rtsp_transport}|stimeout;5000000|max_delay;500000"
+            options = f"rtsp_transport;{self.rtsp_transport}|stimeout;3000000|max_delay;100000"
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = options
 
         cap = cv2.VideoCapture()
-        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5_000)
-        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5_000)
         backend = cv2.CAP_FFMPEG if is_network_source(self.source) else cv2.CAP_ANY
-        if not cap.open(self.source, backend):
+        params = []
+        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+            params.extend((cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5_000))
+        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+            params.extend((cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3_000))
+        try:
+            opened = cap.open(self.source, backend, params) if params else cap.open(self.source, backend)
+        except TypeError:
+            opened = cap.open(self.source, backend)
+        if not opened:
             cap.release()
             raise RuntimeError(f"No se pudo abrir la fuente: {redact_source(self.source)}")
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -222,31 +237,45 @@ class VideoSource:
         log(f"fuente abierta: {redact_source(self.source)}")
 
     def read(self) -> Any | None:
-        if self.cap is None:
-            return None
-        ok, frame = self.cap.read()
-        if ok and frame is not None:
-            return self._fit_frame(frame)
-        if self._is_file:
-            self.cap.set(self.cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = self.cap.read()
-            return self._fit_frame(frame) if ok else None
+        # Return only the newest decoded frame; inference never waits behind a FIFO backlog.
+        with self._frame_condition:
+            while not self._reader_stop.is_set() and self._frame_sequence <= self._delivered_sequence:
+                self._frame_condition.wait(timeout=1.0)
+            if self._latest_frame is None or self._frame_sequence <= self._delivered_sequence:
+                return None
+            self._delivered_sequence = self._frame_sequence
+            return self._latest_frame
 
+    def _capture_latest(self) -> None:
         attempts = 0
-        while self.reconnect_attempts == 0 or attempts < self.reconnect_attempts:
+        while not self._reader_stop.is_set():
+            cap = self.cap
+            if cap is None:
+                self._reader_stop.wait(0.05)
+                continue
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                attempts = 0
+                latest = self._fit_frame(frame)
+                with self._frame_condition:
+                    self._latest_frame = latest
+                    self._frame_sequence += 1
+                    self._frame_condition.notify_all()
+                continue
+            if self._is_file:
+                cap.set(self.cv2.CAP_PROP_POS_FRAMES, 0)
+                continue
+
             attempts += 1
             delay = min(0.5 * attempts, 3.0)
-            log(f"fuente interrumpida; reconexión {attempts} en {delay:.1f} s")
-            time.sleep(delay)
+            log(f"source interrupted; reconnect attempt {attempts} in {delay:.1f}s")
+            self._reader_stop.wait(delay)
+            if self._reader_stop.is_set():
+                break
             try:
                 self.open()
-                ok, frame = self.cap.read()
-                if ok and frame is not None:
-                    return self._fit_frame(frame)
             except RuntimeError as exc:
                 log(str(exc))
-        return None
-
     def metadata(self) -> dict[str, Any]:
         if self.cap is None:
             return {"opened": False}
@@ -260,9 +289,17 @@ class VideoSource:
         }
 
     def close(self) -> None:
+        if hasattr(self, "_reader_stop"):
+            self._reader_stop.set()
+        if hasattr(self, "_frame_condition"):
+            with self._frame_condition:
+                self._frame_condition.notify_all()
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        reader = getattr(self, "_reader_thread", None)
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=2)
 
 
 class FloorCalibration:

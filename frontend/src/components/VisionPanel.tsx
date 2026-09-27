@@ -29,6 +29,7 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
   const [streamLoaded, setStreamLoaded] = useState(false);
   const [retry, setRetry] = useState(0);
   const wasOnline = useRef(false);
+  const streamRetryTimer = useRef<number | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -64,6 +65,10 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
     };
   }, [retry]);
 
+  useEffect(() => () => {
+    if (streamRetryTimer.current !== null) window.clearTimeout(streamRetryTimer.current);
+  }, []);
+
   const liveStream = useMemo(() => {
     const separator = streamUrl.includes('?') ? '&' : '?';
     return `${streamUrl}${separator}session=${retry}`;
@@ -82,6 +87,10 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
   }, [online]);
 
   const restart = () => {
+    if (streamRetryTimer.current !== null) {
+      window.clearTimeout(streamRetryTimer.current);
+      streamRetryTimer.current = null;
+    }
     setStreamLoaded(false);
     setHealth(null);
     setRetry((value) => value + 1);
@@ -115,24 +124,37 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
           src={liveStream}
           alt="Video de cámara con detecciones anónimas, zonas y bounding boxes"
           className={`w-full h-full object-contain transition-opacity ${streamLoaded ? 'opacity-100' : 'opacity-0'}`}
-          onLoad={() => setStreamLoaded(true)}
+          onLoad={() => {
+            setStreamLoaded(true);
+            if (streamRetryTimer.current !== null) {
+              window.clearTimeout(streamRetryTimer.current);
+              streamRetryTimer.current = null;
+            }
+          }}
           onError={() => {
             setStreamLoaded(false);
-            setReachable(false);
+            if (streamRetryTimer.current === null) {
+              streamRetryTimer.current = window.setTimeout(() => {
+                streamRetryTimer.current = null;
+                setRetry((value) => value + 1);
+              }, 2_000);
+            }
           }}
         />
-        {!online && (
+        {(!online || !streamLoaded) && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#111820] text-white/75 px-6 text-center">
-            <WifiOff size={30} strokeWidth={1.5} aria-hidden="true" />
+            {online ? <RefreshCw size={30} strokeWidth={1.5} className="animate-spin" aria-hidden="true" /> : <WifiOff size={30} strokeWidth={1.5} aria-hidden="true" />}
             <div>
-              <p className="text-[13px] font-medium text-white">Proveedor de visión no disponible</p>
+              <p className="text-[13px] font-medium text-white">{online ? 'Reconectando video…' : 'Proveedor de visión no disponible'}</p>
               <p className="text-[11.5px] mt-1 text-white/60">
-                Inicia <span className="font-mono">hardware/local_vision_provider.py</span> en el puerto 8001.
+                {online ? 'El proveedor responde; restableciendo la transmisión.' : <>Inicia <span className="font-mono">hardware/local_vision_provider.py</span> en el puerto 8001.</>}
               </p>
             </div>
-            <button type="button" className="btn btn-sm" onClick={restart}>
-              <RefreshCw size={13} /> Reintentar
-            </button>
+            {!online && (
+              <button type="button" className="btn btn-sm" onClick={restart}>
+                <RefreshCw size={13} /> Reintentar
+              </button>
+            )}
           </div>
         )}
       </div>

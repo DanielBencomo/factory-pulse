@@ -40,6 +40,8 @@
 #define DEVICE_ID    "esp32-st-1-rfid"
 #define STATION_ID   "st-1"
 #define FIRMWARE     "fp-esp32-1.1"
+// Déjalo vacío si RFID_INGEST_TOKEN no está configurado en el backend.
+#define RFID_API_KEY ""
 
 // ---------- Módulos presentes en este nodo ----------
 #define ENABLE_RFID    1
@@ -91,6 +93,25 @@ int postEvent(const char* type, const char* kind, const String& payload) {
                 "\",\"type\":\"" + String(type) + "\",\"quality\":1.0,\"mode\":\"live\",\"payload\":{\"station_id\":\"" STATION_ID "\"," + payload + "}}";
   int code = http.POST(json);
   Serial.printf("[%s] HTTP %d\n", type, code);
+  http.end();
+  return code;
+}
+
+// Contrato independiente del modelo de lector: hoy UID/RC522, mañana EPC/UHF.
+int postRfidRead(const String& tag) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+  HTTPClient http;
+  http.begin(String(SERVER_BASE) + "/api/rfid/events");
+  http.addHeader("Content-Type", "application/json");
+  if (String(RFID_API_KEY).length() > 0) {
+    http.addHeader("X-Factory-Pulse-Key", RFID_API_KEY);
+  }
+  String json = "{\"event_id\":\"" + eventId("rfid") +
+                "\",\"reader_id\":\"" DEVICE_ID "\",\"tag_id\":\"" + tag +
+                "\",\"event\":\"read\",\"station_id\":\"" STATION_ID +
+                "\",\"rssi\":" + String(WiFi.RSSI()) + "}";
+  int code = http.POST(json);
+  Serial.printf("[rfid] HTTP %d\n", code);
   http.end();
   return code;
 }
@@ -176,7 +197,7 @@ void loop() {
     }
     tag.toUpperCase();
     if (tag != lastTag || millis() - lastTagAt > 3000) {  // ignora la misma tarjeta sostenida
-      postEvent("zone_enter", "rfid", "\"tag_id\":\"" + tag + "\",\"source\":\"rfid_checkpoint\"");
+      postRfidRead(tag);
       lastTag = tag;
       lastTagAt = millis();
     }

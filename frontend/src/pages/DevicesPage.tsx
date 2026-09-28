@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Copy, Check, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
-import { ConnectInfo, Device, Station, SystemMode } from '../types';
+import { ConnectInfo, Device, RFIDConfig, Station, SystemMode } from '../types';
 import { api } from '../services/api';
 import { DEVICE_STATUS } from '../components/StationDetail';
 import { Panel } from '../components/DashboardGrid';
@@ -53,11 +53,19 @@ const firmwareConfig = (d: Device, info: ConnectInfo | null) => `// Factory Puls
 #define SERVER_BASE  "${info?.base_url ?? 'http://IP_DEL_SERVIDOR:8000'}"
 #define DEVICE_ID    "${d.device_id}"
 #define STATION_ID   "${d.station_id ?? ''}"
+#define RFID_API_KEY ""
 // Latido cada ${info?.heartbeat_interval_seconds ?? 10} s:  POST SERVER_BASE/api/devices/DEVICE_ID/heartbeat
-// Eventos:              POST SERVER_BASE/api/events  (mode: "live")`;
+// Eventos:              POST SERVER_BASE/api/events  (mode: "live")
+// RFID UID/EPC:         POST SERVER_BASE/api/rfid/events`;
 
 const curlTest = (d: Device, info: ConnectInfo | null) =>
   `curl -X POST ${info?.base_url ?? 'http://IP_DEL_SERVIDOR:8000'}/api/devices/${d.device_id}/heartbeat -H "Content-Type: application/json" -d "{\\"firmware\\":\\"prueba\\"}"`;
+
+const rfidCurl = (info: ConnectInfo | null, config: RFIDConfig | null) => {
+  const url = info?.rfid_events_url ?? 'http://IP_DEL_SERVIDOR:8000/api/rfid/events';
+  const auth = config?.auth_required ? ` -H "${config.auth_header}: TU_CLAVE"` : '';
+  return `curl -X POST ${url} -H "Content-Type: application/json"${auth} -d '{"event_id":"portal-001-0001","reader_id":"portal-001","tag_id":"E2000017221101441890ABCD","event":"enter","zone_id":"zone-storage","antenna_id":"A1","rssi":-48.5}'`;
+};
 
 export const DevicesPage: React.FC<{
   devices: Device[];
@@ -67,6 +75,7 @@ export const DevicesPage: React.FC<{
   onChanged: () => void;
 }> = ({ devices, stations, mode, onModeChange, onChanged }) => {
   const [info, setInfo] = useState<ConnectInfo | null>(null);
+  const [rfid, setRfid] = useState<RFIDConfig | null>(null);
   const [types, setTypes] = useState<{ value: string; label: string }[]>([]);
   const [form, setForm] = useState({ device_id: '', name: '', type: 'esp32_rfid', station_id: '' });
   const [formOpen, setFormOpen] = useState(false);
@@ -77,6 +86,7 @@ export const DevicesPage: React.FC<{
 
   useEffect(() => {
     api.getConnectInfo().then(setInfo).catch(() => setInfo(null));
+    api.getRFIDConfig().then(setRfid).catch(() => setRfid(null));
     api.listDeviceTypes().then(setTypes).catch(() => setTypes([]));
     const id = setInterval(() => tick((n) => n + 1), 1000); // refresca los "hace X s"
     return () => clearInterval(id);
@@ -94,6 +104,7 @@ export const DevicesPage: React.FC<{
 
   const suggestedId = useMemo(() => {
     const st = stations.find((s) => s.station_id === form.station_id);
+    if (form.type === 'rfid_reader') return `rfid-${st ? st.station_id : 'portal'}-uhf`;
     const suffix = form.type.replace('esp32_', '').replace('camera_vision', 'cam');
     return `esp32-${st ? st.station_id : 'nodo'}-${suffix}`;
   }, [form.station_id, form.type, stations]);
@@ -178,6 +189,10 @@ export const DevicesPage: React.FC<{
                   <dd className="num text-[11.5px]">POST /api/events</dd>
                 </div>
                 <div className="kv">
+                  <dt>RFID</dt>
+                  <dd className="num text-[11.5px]">POST /api/rfid/events {info.rfid_auth_required ? '· con clave' : '· sin clave'}</dd>
+                </div>
+                <div className="kv">
                   <dt>Latido</dt>
                   <dd className="num text-[11.5px]">POST /api/devices/&lt;ID&gt;/heartbeat · cada {info.heartbeat_interval_seconds} s</dd>
                 </div>
@@ -217,7 +232,7 @@ export const DevicesPage: React.FC<{
                   <button
                     className="btn btn-sm btn-primary"
                     onClick={() => {
-                      setForm({ device_id: d.device_id, name: '', type: 'esp32_rfid', station_id: '' });
+                      setForm({ device_id: d.device_id, name: d.name, type: d.type, station_id: d.station_id ?? '' });
                       setFormOpen(true);
                     }}
                   >
@@ -369,6 +384,30 @@ export const DevicesPage: React.FC<{
             </tbody>
           </table>
         )}
+      </Panel>
+
+      <Panel
+        title="Entrada universal RFID"
+        subtitle="El mismo endpoint acepta UID de RC522 y EPC de lectores UHF, con lecturas individuales o por lote."
+      >
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 py-1">
+          <div>
+            <div className="eyebrow mb-1">Endpoint en tiempo real</div>
+            <dl className="text-[12.5px]">
+              <div className="kv"><dt>Lectura</dt><dd className="num text-[11px]">POST {info?.rfid_events_url ?? '/api/rfid/events'}</dd></div>
+              <div className="kv"><dt>Lote</dt><dd className="num text-[11px]">POST /api/rfid/events/batch · máx. {rfid?.max_batch_size ?? 500}</dd></div>
+              <div className="kv"><dt>Identificador</dt><dd>{rfid?.accepted_identifiers?.join(' / ') ?? 'UID / EPC'}</dd></div>
+              <div className="kv"><dt>Seguridad</dt><dd>{rfid?.auth_required ? `Header ${rfid.auth_header}` : 'Clave opcional; configura RFID_INGEST_TOKEN'}</dd></div>
+            </dl>
+            <p className="text-[11.5px] text-ink-3 mt-2 leading-snug">
+              También recibe <span className="num">antenna_id</span>, <span className="num">rssi</span>, zona, estación y marca de tiempo. Cada <span className="num">event_id</span> es idempotente.
+            </p>
+          </div>
+          <div>
+            <div className="eyebrow mb-1">Prueba de una lectura</div>
+            <Code>{rfidCurl(info, rfid)}</Code>
+          </div>
+        </div>
       </Panel>
 
       <BadgesPanel />

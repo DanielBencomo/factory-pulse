@@ -88,9 +88,26 @@ class LiveProcessor:
             ).all()
 
             positions: Dict[str, List[Tuple[datetime, float, float]]] = {}
+            occupancy_bundles: Dict[str, Tuple[datetime, Dict[str, Any]]] = {}
+            occupancy_legacy: Dict[Tuple[str, str], Tuple[datetime, Dict[str, Any]]] = {}
             for at, etype, p, _dev in rows:
                 if etype == "position" and "track_id" in p:
                     positions.setdefault(p["track_id"], []).append((at, p.get("x", 0.0), p.get("y", 0.0)))
+                elif etype == "zone_occupancy":
+                    device = _dev or "unknown"
+                    if isinstance(p.get("counts"), dict):
+                        occupancy_bundles[device] = (at, p)
+                    elif p.get("zone_id"):
+                        occupancy_legacy[(device, str(p["zone_id"]))] = (at, p)
+
+            aggregate_counts: Dict[str, int] = {}
+            for _at, payload in occupancy_bundles.values():
+                for zone_id, count in payload.get("counts", {}).items():
+                    aggregate_counts[str(zone_id)] = aggregate_counts.get(str(zone_id), 0) + max(0, int(count))
+            for (device, zone_id), (_at, payload) in occupancy_legacy.items():
+                if device not in occupancy_bundles:
+                    aggregate_counts[zone_id] = aggregate_counts.get(zone_id, 0) + max(0, int(payload.get("count", 0)))
+            aggregate_signal = bool(occupancy_bundles or occupancy_legacy)
 
             live_tracks = {
                 trk: pts[-1] for trk, pts in positions.items() if (now - pts[-1][0]).total_seconds() <= POSITION_MAX_AGE
@@ -110,7 +127,10 @@ class LiveProcessor:
             zone_of = {sid: z for z in zones for sid in (z.station_ids or [])}
             zone_to_station = {z.zone_id: z.station_ids[0] for z in zones if z.station_ids}
 
-            statuses = await self._update_station_status(session, now, rows, stations, zone_of, zone_to_station, live_tracks)
+            statuses = await self._update_station_status(
+                session, now, rows, stations, zone_of, zone_to_station,
+                live_tracks, aggregate_counts, aggregate_signal,
+            )
             await self._evaluate_rules(session, now, rows, stations, zones, live_tracks, positions, statuses)
             await self._check_discrepancies(session, now, rows, stations, zone_of, zone_to_station, positions, live_tracks)
             if window.total_seconds() >= 600:
@@ -118,7 +138,10 @@ class LiveProcessor:
             await session.commit()
 
     # ── estado de cada estación a partir de eventos reales ──
-    async def _update_station_status(self, session, now, rows, stations, zone_of, zone_to_station, live_tracks) -> Dict[str, str]:
+    async def _update_station_status(
+        self, session, now, rows, stations, zone_of, zone_to_station,
+        live_tracks, aggregate_counts, aggregate_signal,
+    ) -> Dict[str, str]:
         stops = (await session.execute(select(DBStop).where(DBStop.status == "open", DBStop.is_authorized == True))).scalars().all()  # noqa: E712
         presence: Dict[str, Tuple[datetime, bool]] = {}
         machine: Dict[str, Tuple[datetime, str]] = {}
@@ -135,7 +158,7 @@ class LiveProcessor:
             elif etype == "cycle":
                 cycles[sid] = at
 
-        camera_active = bool(live_tracks)
+        camera_active = bool(live_tracks) or aggregate_signal
         out: Dict[str, str] = {}
         for st in stations:
             sid = st.station_id
@@ -144,7 +167,10 @@ class LiveProcessor:
                 s.scope_type == "plant" or (s.scope_type == "line" and s.scope_id == st.line_id) or (s.scope_type == "station" and s.scope_id == sid)
                 for s in stops
             )
-            in_zone = bool(zone) and any(_center_in(zone.polygon, x, y) for _, x, y in live_tracks.values())
+            in_zone = bool(zone) and (
+                aggregate_counts.get(zone.zone_id, 0) > 0
+                or any(_center_in(zone.polygon, x, y) for _, x, y in live_tracks.values())
+            )
             pres = presence.get(sid)
             pres_ok = pres is not None and (now - pres[0]).total_seconds() <= PRESENCE_MAX_AGE
             present = in_zone or (pres_ok and pres[1])

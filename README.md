@@ -76,6 +76,7 @@ Daniel/
 │   ├── MATRIZ_ACEPTACION.md  # Matriz de requisitos vs pruebas y resultados
 │   ├── GUIA_DEMO.md          # Guion y relato de 3 a 5 min para el jurado
 │   ├── HARDWARE.md           # Matriz de sensores, pines y limitaciones
+│   ├── AUDITORIA_MAPEO_RFID.md # Alcance, validación y límites de la integración
 │   └── DECISIONES.md         # Registro de decisiones de arquitectura (ADRs)
 ├── .env.example              # Variables de entorno de ejemplo
 └── README.md                 # Esta guía
@@ -113,6 +114,10 @@ python hardware\local_vision_provider.py --source webcam --api http://127.0.0.1:
 ```
 Para usar el teléfono, sustituya `webcam` por su URL RTSP. La guía completa de
 calibración, privacidad y diagnóstico está en [`docs/VISION_YOLO_RTSP.md`](docs/VISION_YOLO_RTSP.md).
+
+Con una homografía cargada, abra **Cámara → Mapear áreas** para congelar una
+captura y dibujar manualmente departamentos, estaciones o líneas directamente
+sobre la imagen. El backend guarda el polígono en coordenadas del plano 2D.
 
 ### 3. Iniciar el Frontend (React + Vite)
 En una tercera terminal:
@@ -159,7 +164,7 @@ Para probar sin hardware, la app muestra un `curl` por dispositivo que simula su
 ### Firmware y servicios incluidos
 | Archivo | Qué hace |
 |---|---|
-| `hardware/esp32_firmware.ino` | RC522 (checkpoint RFID → `zone_enter` con `tag_id`), pulsadores de paro / material / **pieza terminada**, PIR y pulso de ciclo |
+| `hardware/esp32_firmware.ino` | RC522 (adaptador `/api/rfid/events` → `zone_enter`), pulsadores de paro / material / **pieza terminada**, PIR y pulso de ciclo |
 | `hardware/esp32_csi_node.ino` | Nodo Wi‑Fi CSI experimental: calibra con la zona vacía y reporta `presence` con `state` = actividad / quietud / sin_presencia y confianza |
 | `hardware/local_vision_provider.py` | Webcam/MP4/RTSP con YOLO + ByteTrack, IDs temporales, zonas, homografía y streams anotados separados (`--calibrate`) |
 | `hardware/vision_requirements.txt` | Dependencias aisladas del proveedor de visión |
@@ -190,6 +195,28 @@ Envíe un evento JSON al endpoint `POST http://<IP_LAPTOP>:8000/api/events`:
   "mode": "live"
 }
 ```
+
+### RFID RC522 o lector UHF
+
+Todo lector puede publicar UID o EPC en `POST /api/rfid/events`. El endpoint
+normaliza la lectura, hereda la zona/estación del dispositivo registrado,
+deduplica por `event_id` y la transmite por el WebSocket existente:
+
+```json
+{
+  "event_id": "portal-001-000042",
+  "reader_id": "portal-001",
+  "tag_id": "E2000017221101441890ABCD",
+  "event": "enter",
+  "zone_id": "zone-storage",
+  "antenna_id": "A1",
+  "rssi": -48.5
+}
+```
+
+Configure `RFID_INGEST_TOKEN` para exigir el header
+`X-Factory-Pulse-Key`. La pantalla **Dispositivos** muestra la URL, un ejemplo
+`curl` y el límite del endpoint por lote.
 
 ### Vía Script de Prueba de Hardware:
 ```powershell

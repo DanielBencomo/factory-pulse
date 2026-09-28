@@ -2,6 +2,7 @@ export type EventMode = 'demo' | 'replay' | 'live';
 
 export type EventType =
   | 'position'
+  | 'zone_occupancy'
   | 'zone_enter'
   | 'zone_exit'
   | 'presence'
@@ -197,9 +198,43 @@ export interface ConnectInfo {
   base_url: string;
   events_url: string;
   heartbeat_url_template: string;
+  rfid_events_url: string;
+  rfid_auth_required: boolean;
+  rfid_auth_header: string;
   heartbeat_interval_seconds: number;
   device_timeout_seconds: number;
   mqtt: { enabled: boolean; host: string; port: number; topic_template: string };
+}
+
+export interface ZoneOccupancy {
+  zone_id: string;
+  name: string;
+  type: ZoneType;
+  line_id?: string | null;
+  count: number;
+  max_capacity?: number | null;
+  is_aggregated_only: boolean;
+  privacy: 'aggregate_only' | 'anonymous_tracks';
+  source: 'vision_aggregate' | 'tracks';
+}
+
+export interface OccupancySnapshot {
+  mode: SystemMode;
+  at: string;
+  max_age_seconds: number;
+  total_people: number;
+  tracked_people: number;
+  unassigned: number;
+  zones: ZoneOccupancy[];
+}
+
+export interface RFIDConfig {
+  events_url: string;
+  batch_url: string;
+  auth_required: boolean;
+  auth_header: string;
+  accepted_identifiers: string[];
+  max_batch_size: number;
 }
 
 export type AnalyticsState = 'productivo' | 'espera' | 'presente' | 'ausencia' | 'paro' | 'sin_datos';

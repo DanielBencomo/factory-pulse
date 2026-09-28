@@ -18,6 +18,7 @@ Desempate: funcionamiento y calidad, luego integración IoT.
 | Firewall de Windows permite entrada al puerto 8000 | El ESP32 pasa a *conectado* en **Dispositivos** |
 | Layout: **Layout → Plantilla → Cargar escenario del hackathon** (10 × 6 m, Materiales → Producción → Calidad) y **Guardar** | El plano muestra las 3 zonas y el pasillo |
 | Cámara calibrada: `python hardware/local_vision_provider.py --source webcam --calibrate calib.json --plant-width 8 --plant-height 5` | Caminar por una esquina y ver el punto en la misma esquina del plano |
+| Áreas trazadas: **Cámara → Mapear áreas**, marcar cada departamento y guardar | Las zonas quedan proyectadas sobre el video y aparecen en el plano |
 | Visión publicando: `python hardware/local_vision_provider.py --source webcam --calib calib.json --api http://<IP>:8000 --activate-live-mode` | Panel **Cámara** muestra recuadros/IDs y la franja **Fuentes → Cámara · N tracks** |
 | Teléfono RTSP probado: `python hardware/local_vision_provider.py --source "rtsp://<IP>:<PUERTO>/<RUTA>" --probe-source` | Responde `first_frame_ok: true`; no mostrar credenciales al jurado |
 | ESP32 registrados y vinculados en **Editar interior** de cada estación | Sensores con borde verde en el plano |
@@ -43,6 +44,7 @@ de proceso”).
 1. Señalar la franja **Fuentes**: RFID (A), CSI (B), cámara (C), pulsadores (D), proceso (E), cada una en línea.
 2. Un compañero **pasa su tarjeta** en Producción → en el panel de la estación aparece su nombre y la hora.
 3. Señalar el bounding box y el ID anónimo en el panel de cámara; caminar hacia Calidad → el punto se mueve en el plano y crece el spaghetti de la línea.
+   Mostrar **Personas por área** y explicar que sanitarios/zonas privadas solo publican conteos, sin IDs.
 4. Se queda quieto frente a la mesa → el CSI pasa de *actividad* a *quietud*; al salir, *sin presencia*.
 5. Presiona el pulsador **pieza terminada** → sube el contador de piezas y la estación pasa a *productivo*.
 

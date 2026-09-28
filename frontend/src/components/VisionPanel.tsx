@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ExternalLink, RefreshCw, Video, WifiOff } from 'lucide-react';
-import { SystemMode } from '../types';
+import { ExternalLink, MapPinned, RefreshCw, Video, WifiOff } from 'lucide-react';
+import { FloorPlan, Line, PolygonZone, Station, SystemMode } from '../types';
+import { CameraMapEditor } from './CameraMapEditor';
 
 type VisionHealth = {
   ready: boolean;
@@ -23,11 +24,30 @@ const openStream = (url: string) => {
   window.open(url, '_blank', 'noopener,noreferrer');
 };
 
-export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
+interface VisionPanelProps {
+  mode: SystemMode;
+  enableMapping?: boolean;
+  floorPlan?: FloorPlan | null;
+  zones?: PolygonZone[];
+  lines?: Line[];
+  stations?: Station[];
+  onLayoutChanged?: () => void | Promise<void>;
+}
+
+export const VisionPanel: React.FC<VisionPanelProps> = ({
+  mode,
+  enableMapping = false,
+  floorPlan,
+  zones = [],
+  lines = [],
+  stations = [],
+  onLayoutChanged = () => undefined,
+}) => {
   const [health, setHealth] = useState<VisionHealth | null>(null);
   const [reachable, setReachable] = useState(false);
   const [streamLoaded, setStreamLoaded] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [mapping, setMapping] = useState(false);
   const wasOnline = useRef(false);
   const streamRetryTimer = useRef<number | null>(null);
 
@@ -168,6 +188,17 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
           <span className="text-bad">La cámara funciona, pero no alcanza el backend.</span>
         )}
         <div className="ml-auto flex gap-1.5">
+          {enableMapping && (
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              disabled={!online || !health?.calibrated || !floorPlan}
+              title={!health?.calibrated ? 'Primero calibra cuatro puntos del piso' : 'Dibujar departamentos, zonas o líneas'}
+              onClick={() => setMapping(true)}
+            >
+              <MapPinned size={12} /> Mapear áreas
+            </button>
+          )}
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => openStream(floorStreamUrl)}>
             Plano en otra ventana <ExternalLink size={12} />
           </button>
@@ -176,6 +207,16 @@ export const VisionPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
           </button>
         </div>
       </footer>
+      {mapping && floorPlan && (
+        <CameraMapEditor
+          floorPlan={floorPlan}
+          zones={zones}
+          lines={lines}
+          stations={stations}
+          onClose={() => setMapping(false)}
+          onSaved={onLayoutChanged}
+        />
+      )}
     </section>
   );
 };

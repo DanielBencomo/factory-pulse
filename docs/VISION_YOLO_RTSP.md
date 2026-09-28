@@ -146,6 +146,20 @@ polígonos editados en el dashboard sobre el video. Sin calibración, todavía h
 detección y tracking, pero X/Y representan la imagen normalizada y no deben
 interpretarse como metros del piso.
 
+### Dibujar departamentos sobre una captura
+
+Con el proveedor iniciado usando `--calib`, abra **Cámara → Mapear áreas**:
+
+1. pulse **Nueva captura** si desea congelar otro instante;
+2. elija *Zona / departamento* o *Línea completa*;
+3. marque al menos tres vértices siguiendo el piso visible;
+4. asigne nombre, tipo, línea, estación y capacidad;
+5. active *Solo conteo agregado* en áreas sensibles y guarde.
+
+El navegador envía los puntos a `/vision/map-points`; el proveedor aplica la
+homografía y FastAPI guarda el resultado normalizado. Los accesos sanitarios se
+fuerzan siempre a modo agregado, aunque se desmarque la opción.
+
 ## Spaghetti sin saturación visual
 
 La vista de cámara no dibuja trayectorias por defecto: conserva bounding boxes,
@@ -178,6 +192,7 @@ individual dentro de esa zona.
 | `/vision/floor.mjpg` | Plano 2D y spaghetti |
 | `/vision/snapshot.jpg` | Último cuadro anotado |
 | `/vision/floor.jpg` | Último cuadro del plano |
+| `POST /vision/map-points` | Cámara ↔ plano mediante la homografía cargada |
 
 Por defecto escucha sólo en `127.0.0.1:8001`. Si Vite se ejecuta en otra
 computadora, inicie con `--stream-host 0.0.0.0` y configure:

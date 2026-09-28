@@ -8,6 +8,7 @@ import numpy as np
 
 from hardware.local_vision_provider import (
     EventPublisher,
+    FloorCalibration,
     VideoSource,
     YoloByteTracker,
     build_parser,
@@ -153,6 +154,41 @@ class VisionProviderHelpersTest(unittest.TestCase):
         self.assertTrue(FakeYOLO.last_kwargs["persist"])
         self.assertEqual(detections[0].track_id, "CAM-P7")
         self.assertEqual((detections[0].foot_x, detections[0].foot_y), (30.0, 100.0))
+
+    def test_normalized_mapping_roundtrip(self):
+        calibration = FloorCalibration("hardware/calibration.synthetic.json")
+        camera = [[0.12, 0.23], [0.75, 0.81]]
+        floor = calibration.map_normalized_points(camera, "camera_to_floor", 1280, 720)
+        restored = calibration.map_normalized_points(floor, "floor_to_camera", 1280, 720)
+        np.testing.assert_allclose(restored, camera, atol=1e-3)
+
+    def test_mapping_requires_homography(self):
+        calibration = FloorCalibration()
+        with self.assertRaisesRegex(ValueError, "homografía"):
+            calibration.map_normalized_points([[0.5, 0.5]], "camera_to_floor", 1280, 720)
+
+    def test_occupancy_bundle_contains_no_track_identifier(self):
+        captured = {}
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+        class Session:
+            def post(self, _url, **kwargs):
+                captured.update(kwargs)
+                return Response()
+
+        publisher = EventPublisher("http://127.0.0.1:8000", "camera-test")
+        publisher._post_measurements(
+            Session(),
+            [],
+            [{"zone_id": "__plant__", "count": 2, "counts": {"zone-private": 2}}],
+        )
+        event = captured["json"][0]
+        self.assertEqual(event["type"], "zone_occupancy")
+        self.assertNotIn("track_id", event["payload"])
+        self.assertEqual(event["payload"]["counts"]["zone-private"], 2)
 
 
 if __name__ == "__main__":

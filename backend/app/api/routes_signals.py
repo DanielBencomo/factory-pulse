@@ -124,7 +124,7 @@ async def save_badge(badge: BadgeIn, session: AsyncSession = Depends(get_db)):
 
 @router.delete("/badges/{tag_id}", status_code=204)
 async def delete_badge(tag_id: str, session: AsyncSession = Depends(get_db)):
-    row = (await session.execute(select(DBBadge).where(DBBadge.tag_id == tag_id))).scalar_one_or_none()
+    row = (await session.execute(select(DBBadge).where(DBBadge.tag_id == tag_id.strip().upper()))).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Tarjeta no registrada")
     await session.delete(row)

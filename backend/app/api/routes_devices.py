@@ -16,6 +16,7 @@ from app.simulator.engine import simulator
 router = APIRouter()
 
 DEVICE_TYPES = {
+    "rfid_reader": "Lector RFID/UHF industrial",
     "esp32_rfid": "ESP32 + RC522 (checkpoint RFID)",
     "esp32_csi": "ESP32 Wi‑Fi CSI (actividad de zona)",
     "esp32_button": "ESP32 + pulsadores (paro / andon)",
@@ -182,6 +183,9 @@ async def connect_info(request: Request):
         "base_url": f"http://{host}:{port}",
         "events_url": f"http://{host}:{port}{settings.API_V1_STR}/events",
         "heartbeat_url_template": f"http://{host}:{port}{settings.API_V1_STR}/devices/{{DEVICE_ID}}/heartbeat",
+        "rfid_events_url": f"http://{host}:{port}{settings.API_V1_STR}/rfid/events",
+        "rfid_auth_required": bool(settings.RFID_INGEST_TOKEN),
+        "rfid_auth_header": "X-Factory-Pulse-Key",
         "heartbeat_interval_seconds": 10,
         "device_timeout_seconds": settings.DEVICE_TIMEOUT_SECONDS,
         "mqtt": {

@@ -8,6 +8,7 @@ GET /layout devuelve todo junto; PUT /layout lo reemplaza en una sola transacci�
 from datetime import datetime
 from typing import Dict, List
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -58,10 +59,49 @@ def _station_dict(s: DBStation) -> Dict:
     }
 
 
+class LinePolygonIn(BaseModel):
+    polygon: List[List[float]] = Field(..., min_length=3)
+    author: str = Field("Editor sobre cámara", max_length=128)
+
+
+def _polygon_area(poly: List[List[float]]) -> float:
+    return abs(sum(
+        poly[i][0] * poly[(i + 1) % len(poly)][1]
+        - poly[(i + 1) % len(poly)][0] * poly[i][1]
+        for i in range(len(poly))
+    )) / 2
+
+
 @router.get("/lines")
 async def list_lines(session: AsyncSession = Depends(get_db)):
     res = await session.execute(select(DBLine).order_by(DBLine.order))
     return [_line_dict(l) for l in res.scalars().all()]
+
+
+@router.put("/lines/{line_id}/polygon")
+async def update_line_polygon(
+    line_id: str,
+    body: LinePolygonIn,
+    session: AsyncSession = Depends(get_db),
+):
+    if any(
+        len(point) != 2 or not (0 <= point[0] <= 1 and 0 <= point[1] <= 1)
+        for point in body.polygon
+    ):
+        raise HTTPException(status_code=422, detail="Todos los vértices deben estar dentro de 0..1")
+    if _polygon_area(body.polygon) < 1e-6:
+        raise HTTPException(status_code=422, detail="El polígono no puede tener área cero")
+    line = (await session.execute(select(DBLine).where(DBLine.id == line_id))).scalar_one_or_none()
+    if not line:
+        raise HTTPException(status_code=404, detail="Línea no encontrada")
+    line.polygon = body.polygon
+    session.add(DBAuditLog(
+        action="UPDATE_LINE_POLYGON", actor=body.author, entity_type="LINE",
+        entity_id=line_id, details={"vertices": len(body.polygon)},
+    ))
+    await session.commit()
+    await ws_manager.broadcast({"type": "LAYOUT_UPDATED"})
+    return _line_dict(line)
 
 
 @router.get("/layout")

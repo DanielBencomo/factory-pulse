@@ -23,6 +23,16 @@ class PositionPayload(BaseModel):
     source: str = Field("vision_local", description="Sensor/provider origin")
     speed_m_s: Optional[float] = Field(None, description="Calculated speed in m/s")
 
+class ZoneOccupancyPayload(BaseModel):
+    """Conteo anónimo emitido por una cámara, sin IDs individuales."""
+    zone_id: str
+    count: int = Field(..., ge=0)
+    aggregated: bool = True
+    source: str = "vision_yolo_bytetrack"
+    counts: Optional[Dict[str, int]] = Field(
+        None, description="Snapshot opcional zone_id -> personas de una cámara"
+    )
+
 class ZoneEventPayload(BaseModel):
     zone_id: str
     track_id: str

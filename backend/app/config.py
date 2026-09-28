@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     START_MODE: str = os.getenv("START_MODE", "demo")
     # Segundos sin latido para considerar un dispositivo sin señal.
     DEVICE_TIMEOUT_SECONDS: int = int(os.getenv("DEVICE_TIMEOUT_SECONDS", "30"))
+    # Si se define, los lectores RFID deben enviarlo en X-Factory-Pulse-Key.
+    RFID_INGEST_TOKEN: str = os.getenv("RFID_INGEST_TOKEN", "")
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="allow")
 

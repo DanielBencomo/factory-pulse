@@ -2,7 +2,8 @@ import {
   FloorPlan, PolygonZone, Station, Device, Stop, StopReason,
   Alert, AlertRuleConfig, MetricsSummary, DashboardConfig,
   CatalogModule, ScaleCalibration, Layout, Line, TrackPoint,
-  Analytics, ConnectInfo, SystemMode, InteriorItem, Badge, Recording, Playback, ZoneSignals
+  Analytics, ConnectInfo, SystemMode, InteriorItem, Badge, Recording, Playback, ZoneSignals,
+  OccupancySnapshot, RFIDConfig, ZoneType
 } from '../types';
 
 const API_BASE = '/api';
@@ -64,6 +65,24 @@ export const api = {
     return res.json();
   },
 
+  async createZone(zone: {
+    zone_id: string; floor_plan_id: string; name: string; type: ZoneType;
+    polygon: [number, number][]; color: string; station_ids: string[];
+    max_capacity?: number; is_aggregated_only: boolean; line_id?: string | null;
+  }): Promise<PolygonZone> {
+    const res = await fetch(`${API_BASE}/zones`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(zone),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo crear el área'));
+    return res.json();
+  },
+
+  async getZoneOccupancy(): Promise<OccupancySnapshot> {
+    const res = await fetch(`${API_BASE}/zones/occupancy/live`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo leer la ocupación'));
+    return res.json();
+  },
+
   async listStations(): Promise<Station[]> {
     const res = await fetch(`${API_BASE}/stations`);
     return res.json();
@@ -101,6 +120,14 @@ export const api = {
 
   async listLines(): Promise<Line[]> {
     const res = await fetch(`${API_BASE}/lines`);
+    return res.json();
+  },
+
+  async updateLinePolygon(lineId: string, polygon: [number, number][]): Promise<Line> {
+    const res = await fetch(`${API_BASE}/lines/${encodeURIComponent(lineId)}/polygon`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ polygon }),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo actualizar la línea'));
     return res.json();
   },
 
@@ -142,6 +169,12 @@ export const api = {
 
   async getConnectInfo(): Promise<ConnectInfo> {
     const res = await fetch(`${API_BASE}/connect/info`);
+    return res.json();
+  },
+
+  async getRFIDConfig(): Promise<RFIDConfig> {
+    const res = await fetch(`${API_BASE}/rfid/config`);
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo leer la configuración RFID'));
     return res.json();
   },
 

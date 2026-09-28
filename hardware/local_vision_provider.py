@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -47,7 +47,7 @@ except ImportError:  # permite consultar --help y ejecutar pruebas de helpers si
     requests = None  # type: ignore[assignment]
 
 
-VERSION = "vision-yolo-0.4.0"
+VERSION = "vision-yolo-0.5.0"
 
 
 def log(message: str) -> None:
@@ -358,6 +358,37 @@ class FloorCalibration:
             return None
         return round(point[0]), round(point[1])
 
+    def map_normalized_points(
+        self,
+        points: list[list[float]],
+        direction: str,
+        frame_w: int,
+        frame_h: int,
+    ) -> list[list[float]]:
+        """Proyecta puntos normalizados para el editor web sobre la cámara."""
+        if not self.calibrated:
+            raise ValueError("La cámara necesita una homografía antes de mapear áreas")
+        if frame_w <= 0 or frame_h <= 0:
+            raise ValueError("Todavía no hay dimensiones de video disponibles")
+        output: list[list[float]] = []
+        for point in points:
+            if len(point) != 2 or not all(isinstance(v, (int, float)) for v in point):
+                raise ValueError("Cada punto debe ser [x, y]")
+            x, y = float(point[0]), float(point[1])
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                raise ValueError("Los puntos deben estar dentro de 0..1")
+            if direction == "camera_to_floor":
+                mapped = self.camera_to_floor(x * frame_w, y * frame_h, frame_w, frame_h)
+                output.append([round(mapped[0], 6), round(mapped[1], 6)])
+            elif direction == "floor_to_camera":
+                mapped = self.floor_to_camera(x, y)
+                if mapped is None:
+                    raise ValueError("No fue posible invertir la homografía")
+                output.append([round(mapped[0] / frame_w, 6), round(mapped[1] / frame_h, 6)])
+            else:
+                raise ValueError("direction debe ser camera_to_floor o floor_to_camera")
+        return output
+
 
 class ZoneClient:
     def __init__(self, api_base: str, refresh_seconds: float = 5.0) -> None:
@@ -489,7 +520,7 @@ class EventPublisher:
         self.activate_live_mode = activate_live_mode
         self.events_url = f"{self.api_base}/api/events/batch"
         self.heartbeat_url = f"{self.api_base}/api/devices/{device_id}/heartbeat"
-        self._queue: queue.Queue[list[dict[str, Any]] | None] = queue.Queue(maxsize=2)
+        self._queue: queue.Queue[tuple[list[dict[str, Any]], list[dict[str, Any]]] | None] = queue.Queue(maxsize=2)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="vision-publisher", daemon=True)
         self.last_ok_at: float | None = None
@@ -498,18 +529,23 @@ class EventPublisher:
     def start(self) -> None:
         self._thread.start()
 
-    def submit(self, positions: list[dict[str, Any]]) -> None:
-        if not positions:
+    def submit(
+        self,
+        positions: list[dict[str, Any]],
+        occupancies: list[dict[str, Any]] | None = None,
+    ) -> None:
+        measurements = (positions, occupancies or [])
+        if not measurements[0] and not measurements[1]:
             return
         try:
-            self._queue.put_nowait(positions)
+            self._queue.put_nowait(measurements)
         except queue.Full:
             try:
                 self._queue.get_nowait()
             except queue.Empty:
                 pass
             try:
-                self._queue.put_nowait(positions)
+                self._queue.put_nowait(measurements)
             except queue.Full:
                 pass
 
@@ -545,7 +581,12 @@ class EventPublisher:
         )
         response.raise_for_status()
 
-    def _post_positions(self, session: requests.Session, positions: list[dict[str, Any]]) -> None:
+    def _post_measurements(
+        self,
+        session: requests.Session,
+        positions: list[dict[str, Any]],
+        occupancies: list[dict[str, Any]],
+    ) -> None:
         occurred_at = datetime.now(timezone.utc).isoformat()
         batch = []
         for position in positions:
@@ -572,8 +613,38 @@ class EventPublisher:
                     "mode": "live",
                 }
             )
+        for occupancy in occupancies:
+            payload: dict[str, Any] = {
+                "zone_id": str(occupancy.get("zone_id", "__plant__")),
+                "count": max(0, int(occupancy.get("count", 0))),
+                "aggregated": True,
+                "source": "vision_yolo_bytetrack",
+            }
+            if isinstance(occupancy.get("counts"), dict):
+                payload["counts"] = {
+                    str(zone_id): max(0, int(count))
+                    for zone_id, count in occupancy["counts"].items()
+                }
+            batch.append(
+                {
+                    "event_id": f"occ-{uuid.uuid4().hex}",
+                    "device_id": self.device_id,
+                    "source_id": "vision_yolo_bytetrack",
+                    "occurred_at": occurred_at,
+                    "type": "zone_occupancy",
+                    "payload": payload,
+                    "quality": 1.0,
+                    "mode": "live",
+                }
+            )
+        if not batch:
+            return
         response = session.post(self.events_url, json=batch, timeout=3)
         response.raise_for_status()
+
+    def _post_positions(self, session: requests.Session, positions: list[dict[str, Any]]) -> None:
+        """Compatibilidad con integraciones 0.4 y pruebas externas."""
+        self._post_measurements(session, positions, [])
 
     def _run(self) -> None:
         session = requests.Session()
@@ -591,12 +662,13 @@ class EventPublisher:
                     if not mode_configured:
                         mode_configured = self._configure_mode(session)
                 try:
-                    positions = self._queue.get(timeout=0.25)
+                    measurements = self._queue.get(timeout=0.25)
                 except queue.Empty:
                     continue
-                if positions is None:
+                if measurements is None:
                     break
-                self._post_positions(session, positions)
+                positions, occupancies = measurements
+                self._post_measurements(session, positions, occupancies)
                 self.last_ok_at = time.time()
                 if self.last_error:
                     log("conexión con el backend recuperada")
@@ -954,6 +1026,8 @@ class FrameHub:
             "tracks": 0,
             "zones": 0,
             "calibrated": False,
+            "frame_width": 0,
+            "frame_height": 0,
         }
 
     def update(self, camera: Any, floor: Any, **status: Any) -> None:
@@ -967,7 +1041,12 @@ class FrameHub:
             self._floor_jpeg = encoded_floor.tobytes()
             self._sequence += 1
             self._status.update(status)
-            self._status.update({"ready": True, "updated_at": datetime.now(timezone.utc).isoformat()})
+            self._status.update({
+                "ready": True,
+                "frame_width": int(camera.shape[1]),
+                "frame_height": int(camera.shape[0]),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
             self._lock.notify_all()
 
     def status(self) -> dict[str, Any]:
@@ -986,18 +1065,20 @@ class FrameHub:
 
 
 class VisionHTTPServer:
-    def __init__(self, host: str, port: int, hub: FrameHub) -> None:
+    def __init__(self, host: str, port: int, hub: FrameHub, calibration: FloorCalibration) -> None:
         self.host = host
         self.port = port
         self.hub = hub
+        self.calibration = calibration
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         hub = self.hub
+        calibration = self.calibration
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "FactoryPulseVision/0.4"
+            server_version = "FactoryPulseVision/0.5"
 
             def log_message(self, _format: str, *_args: Any) -> None:
                 return
@@ -1008,6 +1089,8 @@ class VisionHTTPServer:
                 self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
                 self.send_header("Pragma", "no-cache")
                 self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                 if length is not None:
                     self.send_header("Content-Length", str(length))
                 self.end_headers()
@@ -1049,6 +1132,39 @@ class VisionHTTPServer:
                     body = b"Factory Pulse Vision"
                     self._headers(HTTPStatus.NOT_FOUND, "text/plain", len(body))
                     self.wfile.write(body)
+
+            def do_OPTIONS(self) -> None:
+                self._headers(HTTPStatus.NO_CONTENT, "text/plain", 0)
+
+            def do_POST(self) -> None:
+                path = urlsplit(self.path).path
+                if path != "/vision/map-points":
+                    self._headers(HTTPStatus.NOT_FOUND, "text/plain", 0)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length <= 0 or length > 262_144:
+                        raise ValueError("Cuerpo JSON vacío o demasiado grande")
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict):
+                        raise ValueError("Se esperaba un objeto JSON")
+                    points = body.get("points")
+                    if not isinstance(points, list) or not 1 <= len(points) <= 500:
+                        raise ValueError("points debe contener entre 1 y 500 puntos")
+                    state = hub.status()
+                    mapped = calibration.map_normalized_points(
+                        points,
+                        str(body.get("direction", "camera_to_floor")),
+                        int(state.get("frame_width", 0)),
+                        int(state.get("frame_height", 0)),
+                    )
+                    data = json.dumps({"points": mapped, "calibrated": True}).encode()
+                    self._headers(HTTPStatus.OK, "application/json; charset=utf-8", len(data))
+                    self.wfile.write(data)
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    data = json.dumps({"detail": str(exc)}).encode()
+                    self._headers(HTTPStatus.UNPROCESSABLE_ENTITY, "application/json; charset=utf-8", len(data))
+                    self.wfile.write(data)
 
         self._server = ThreadingHTTPServer((self.host, self.port), Handler)
         self._server.daemon_threads = True
@@ -1266,7 +1382,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     hub = FrameHub(args.jpeg_quality, redact_source(parse_source(args.source)), args.model)
     stream_server: VisionHTTPServer | None = None
     if not args.no_stream:
-        stream_server = VisionHTTPServer(args.stream_host, args.stream_port, hub)
+        stream_server = VisionHTTPServer(args.stream_host, args.stream_port, hub, calibration)
         stream_server.start()
 
     import cv2
@@ -1316,10 +1432,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             now = time.monotonic()
             if now - last_publish_at >= args.publish_interval:
                 positions = []
+                zone_counts: Counter[str] = Counter()
                 for detection in detections:
                     x, y = detection.floor_x, detection.floor_y
                     if x is None or y is None or not (0 <= x <= 1 and 0 <= y <= 1):
                         continue
+                    if detection.zone:
+                        zone_counts[detection.zone.zone_id] += 1
                     if detection.zone and detection.zone.is_aggregated_only:
                         continue
                     positions.append(
@@ -1332,7 +1451,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                             "zone_id": detection.zone.zone_id if detection.zone else None,
                         }
                     )
-                publisher.submit(positions)
+                # Un solo snapshot por cámara evita mezclar instantes y no contiene IDs.
+                publisher.submit(positions, [{
+                    "zone_id": "__plant__",
+                    "count": len(detections),
+                    "counts": dict(zone_counts),
+                }])
                 last_publish_at = now
 
             if not args.no_display:

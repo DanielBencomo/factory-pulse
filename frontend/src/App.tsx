@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { Sidebar, Page, PAGES } from './components/Sidebar';
 import { FloorPlan2D } from './components/FloorPlan2D';
 import { VisionPanel } from './components/VisionPanel';
+import { ZoneOccupancyPanel } from './components/ZoneOccupancyPanel';
 import { KpiStrip, StationTablePanel, AlertsPanel, StopsPanel, SourcesStrip } from './components/DashboardGrid';
 import { StopsModal } from './components/StopsModal';
 import { SimulatorControls } from './components/SimulatorControls';
@@ -280,6 +281,7 @@ export const App: React.FC = () => {
       <div className="space-y-4">
         <KpiStrip analytics={analytics} />
         <SourcesStrip devices={devices} tracksCount={Object.keys(tracks).length} mode={mode} />
+        <ZoneOccupancyPanel mode={mode} />
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
           <div className="xl:col-span-7 min-w-0">
             <VisionPanel mode={mode} />
@@ -326,7 +328,20 @@ export const App: React.FC = () => {
       </div>
     );
   } else if (page === 'camara') {
-    content = <VisionPanel mode={mode} />;
+    content = (
+      <div className="space-y-4">
+        <VisionPanel
+          mode={mode}
+          enableMapping
+          floorPlan={floorPlan}
+          zones={zones}
+          lines={lines}
+          stations={stations}
+          onLayoutChanged={refreshLayout}
+        />
+        <ZoneOccupancyPanel mode={mode} />
+      </div>
+    );
   } else if (page === 'metricas') {
     content = <MetricsPage analytics={analytics} lineName={lineName} />;
   } else if (page === 'eventos') {

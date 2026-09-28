@@ -44,8 +44,8 @@ type Scope = { kind: 'plant' } | { kind: 'line'; id: string } | { kind: 'zone'; 
 type VB = [number, number, number, number];
 
 const ZOOM_MS = 480;
-const HISTORY_MINUTES = 30;
-const SPAGHETTI_WINDOWS = [5, 15, 30];
+const HISTORY_MINUTES = 60;
+const SPAGHETTI_WINDOWS = [5, 15, 30, 60];
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const prefersReducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -399,11 +399,11 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 ))}
               </div>
               <div>
-                <label className="label">Ventana del recorrido</label>
+                <label className="label">Ventana de recorrido y calor</label>
                 <select value={spaghettiMin} onChange={(e) => setSpaghettiMin(Number(e.target.value))} className="field">
                   {SPAGHETTI_WINDOWS.map((m) => (
                     <option key={m} value={m}>
-                      Últimos {m} min
+                      {m === 60 ? 'Última hora' : `Últimos ${m} min`}
                     </option>
                   ))}
                 </select>

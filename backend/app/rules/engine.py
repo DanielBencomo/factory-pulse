@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from fastapi.encoders import jsonable_encoder
 
 from app.models.db_models import DBAlert, DBAlertRule, DBEvent, DBStation, DBDevice
 from app.models.domain import AlertSeverity, AlertStatus
@@ -170,7 +171,9 @@ class RuleEngine:
                     scope_type=scope_type,
                     scope_id=scope_id,
                     triggered_at=now,
-                    evidence=evidence
+                    # SQLite JSON no serializa datetime/Enum automáticamente. Los
+                    # estados de dispositivos incluyen last_heartbeat como datetime.
+                    evidence=jsonable_encoder(evidence)
                 )
                 session.add(alert)
                 created_alerts.append(alert)

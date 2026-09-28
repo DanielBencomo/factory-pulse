@@ -12,6 +12,7 @@ class EventMode(str, Enum):
 
 class EventType(str, Enum):
     POSITION = "position"
+    ZONE_OCCUPANCY = "zone_occupancy"
     ZONE_ENTER = "zone_enter"
     ZONE_EXIT = "zone_exit"
     PRESENCE = "presence"

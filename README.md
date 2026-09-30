@@ -19,6 +19,7 @@
 │  • Motor de Reglas y Alertas (recorridos, cuellos de botella, paros)        │
 │  • Algoritmo de Unión de Intervalos (paros solapados sin doble descuento)   │
 │  • Clasificación de universo temporal: Productivo / Espera / Ausencia       │
+│  • Analítica espacial: ocupación, congestión, rutas, retornos y cobertura   │
 │  • Simulador determinista de 8 escenas industriales                         │
 │  • Base de datos SQLite local (Persistencia completa, sin nube obligatoria)  │
 │  • Canal WebSocket /ws en tiempo real                                       │
@@ -28,6 +29,7 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                     FRONTEND (React + TypeScript + Vite)                    │
 │  • Plano 2D interactivo con trayectorias Spaghetti y Heatmap                │
+│  • Analíticas seleccionables por rol y observaciones automáticas explicables │
 │  • Modos visuales inequívocos: DEMO, REPRODUCCIÓN y EN VIVO                 │
 │  • Tablero configurable con widgets en tiempo real (Apache ECharts)         │
 │  • Módulo de Paros para Administrador con recálculo dinámico                │
@@ -77,6 +79,8 @@ Daniel/
 │   ├── GUIA_DEMO.md          # Guion y relato de 3 a 5 min para el jurado
 │   ├── HARDWARE.md           # Matriz de sensores, pines y limitaciones
 │   ├── AUDITORIA_MAPEO_RFID.md # Alcance, validación y límites de la integración
+│   ├── ANALITICAS_AVANZADAS_Y_TRABAJO_FUTURO.md # KPIs, fórmulas y roadmap
+│   ├── PROMPT_DESPLIEGUE_PC.md # Prompt verificable para instalar en Windows
 │   └── DECISIONES.md         # Registro de decisiones de arquitectura (ADRs)
 ├── .env.example              # Variables de entorno de ejemplo
 └── README.md                 # Esta guía
@@ -127,6 +131,10 @@ npm run dev
 ```
 - Abra su navegador en: `http://localhost:3000` (o `http://localhost:5173`).
 
+El procedimiento completo para Windows, incluidas las tres terminales, RTSP,
+calibración, pruebas y diagnóstico, está en
+[`docs/PROMPT_DESPLIEGUE_PC.md`](docs/PROMPT_DESPLIEGUE_PC.md).
+
 ---
 
 ## 🧪 Ejecución de Pruebas Automatizadas
@@ -136,7 +144,7 @@ npm run dev
 cd backend
 pytest -v
 ```
-Las pruebas usan su propia base (`test_factory_pulse.db`) y no tocan el layout ni los datos reales. Cubren cálculo de paros solapados, deduplicación de eventos, reglas de alerta, privacidad en sanitarios, layout editable, interior por área, registro y conexión de dispositivos, y la reconstrucción de estados de la analítica.
+Las pruebas usan su propia base (`test_factory_pulse.db`) y no tocan el layout ni los datos reales. Cubren cálculo de paros solapados, deduplicación de eventos, reglas de alerta, privacidad en sanitarios, layout editable, interior por área, registro y conexión de dispositivos, reconstrucción de estados, rutas agregadas, congestión y analítica espacial.
 
 ```powershell
 # Validar compilación de tipos y build de producción del Frontend:
@@ -224,6 +232,28 @@ cd hardware
 python test_publisher.py --transport http --api-url http://localhost:8000/api/events
 ```
 El evento se reflejará de inmediato en el mapa 2D y en las gráficas mediante WebSocket.
+
+## Analítica espacial y vistas por usuario
+
+La página **Planta** reserva el espacio principal al plano 2D. La cámara vive en
+su propia página para mantener legibles bounding boxes, zonas y rutas. El plano
+ofrece capas directas de **Zonas**, **Rutas**, **Tránsito** y **Permanencia**; el
+spaghetti se segmenta por línea, zona o track para no superponer toda la planta.
+
+La página **Métricas** permite escoger cada módulo o usar vistas rápidas para
+Supervisor, Ingeniería industrial y Balanceo. Las selecciones persisten en el
+navegador. El backend expone agregados anónimos en:
+
+| Endpoint | Contenido |
+|---|---|
+| `GET /api/spatial/summary` | ocupación, persona·min, movimiento, distancia, capacidad, rutas e insights |
+| `GET /api/spatial/insights` | observaciones, evidencia, revisión sugerida y capa relacionada |
+
+Los conteos vencidos se reportan como desconocidos, no como cero. Las zonas
+sensibles cortan la secuencia de ruta y nunca publican track IDs. Fórmulas,
+limitaciones y sensores necesarios para OEE, WIP, flow time, MTBF y otras fases
+están en
+[`docs/ANALITICAS_AVANZADAS_Y_TRABAJO_FUTURO.md`](docs/ANALITICAS_AVANZADAS_Y_TRABAJO_FUTURO.md).
 
 ---
 

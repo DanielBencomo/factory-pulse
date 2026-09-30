@@ -3,7 +3,7 @@ import {
   Alert, AlertRuleConfig, MetricsSummary, DashboardConfig,
   CatalogModule, ScaleCalibration, Layout, Line, TrackPoint,
   Analytics, ConnectInfo, SystemMode, InteriorItem, Badge, Recording, Playback, ZoneSignals,
-  OccupancySnapshot, RFIDConfig, ZoneType
+  OccupancySnapshot, RFIDConfig, ZoneType, SpatialSummary
 } from '../types';
 
 const API_BASE = '/api';
@@ -152,6 +152,20 @@ export const api = {
   async getAnalytics(lineId: string, minutes: number): Promise<Analytics> {
     const res = await fetch(`${API_BASE}/analytics?line_id=${encodeURIComponent(lineId)}&minutes=${minutes}`);
     if (!res.ok) throw new Error('Error fetching analytics');
+    return res.json();
+  },
+
+  async getSpatialSummary(
+    scope: 'plant' | 'line' | 'station' | 'zone' = 'plant',
+    scopeId?: string | null,
+    minutes: number = 60,
+    mode?: SystemMode,
+  ): Promise<SpatialSummary> {
+    const params = new URLSearchParams({ scope, minutes: String(minutes) });
+    if (scopeId) params.set('scope_id', scopeId);
+    if (mode) params.set('mode', mode);
+    const res = await fetch(`${API_BASE}/spatial/summary?${params}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo calcular la analítica espacial'));
     return res.json();
   },
 

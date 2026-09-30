@@ -153,6 +153,96 @@ export interface Device {
 export type DeviceStatus = 'online' | 'offline' | 'waiting' | 'warning';
 export type SystemMode = 'demo' | 'live' | 'replay';
 
+export type SpatialLayer = 'zones' | 'routes' | 'traffic' | 'dwell';
+
+export interface SpatialZoneMetric {
+  zone_id: string;
+  name: string;
+  type: ZoneType;
+  line_id?: string | null;
+  current_count: number | null;
+  average_occupancy: number;
+  peak_occupancy: number;
+  person_minutes: number;
+  occupied_pct: number;
+  stationary_pct: number;
+  moving_pct: number;
+  unknown_motion_pct: number;
+  visits: number | null;
+  visits_per_hour: number | null;
+  area_m2: number;
+  peak_density_person_m2: number;
+  max_capacity?: number | null;
+  congested_seconds: number;
+  excess_person_minutes: number;
+  sustained_peak_seconds: number;
+  is_aggregated_only: boolean;
+}
+
+export interface SpatialTransition {
+  from_zone_id: string;
+  from_name: string;
+  to_zone_id: string;
+  to_name: string;
+  count: number;
+}
+
+export interface SpatialInsight {
+  id: string;
+  tone: 'good' | 'info' | 'attention';
+  priority: number;
+  title: string;
+  observation: string;
+  evidence: string;
+  suggestion: string;
+  scope_type: 'plant' | 'zone';
+  scope_id?: string | null;
+  layer: SpatialLayer;
+}
+
+export interface SpatialSummary {
+  mode: SystemMode;
+  scope: { type: 'plant' | 'line' | 'station' | 'zone'; id?: string | null; label: string };
+  window: { start: string; end: string; minutes: number; step_s: number };
+  generated_at: string;
+  summary: {
+    current_people: number | null;
+    average_occupancy: number;
+    peak_occupancy: number;
+    observed_person_minutes: number;
+    stationary_pct: number;
+    moving_pct: number;
+    unknown_motion_pct: number;
+    coverage_pct: number;
+    fresh: boolean;
+    last_observation_age_seconds: number | null;
+    top_dwell_zone: { zone_id: string; name: string; person_minutes: number } | null;
+    max_congestion: { zone_id: string; name: string; people: number; capacity: number | null; sustained_seconds: number; over_capacity: boolean } | null;
+    distance_m: number;
+    distance_per_person_hour_m: number | null;
+    total_transitions: number;
+    route_concentration_pct: number;
+    transition_entropy_pct: number;
+    backtrack_ratio_pct: number;
+    zone_utilization_pct: number;
+    congestion_excess_person_minutes: number;
+    congested_seconds: number;
+    peak_density_person_m2: number;
+    source_count: number;
+    calibrated: boolean;
+  };
+  zones: SpatialZoneMetric[];
+  transitions: SpatialTransition[];
+  insights: SpatialInsight[];
+  methodology: {
+    position_max_age_s: number;
+    occupancy_max_age_s: number;
+    stationary_threshold_m_s: number;
+    privacy: string;
+    interpretation: string;
+  };
+}
+
 export interface Playback {
   active: boolean;
   recording_id: string | null;

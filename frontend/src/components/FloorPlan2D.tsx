@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { ArrowLeft, ChevronLeft, ChevronRight, PencilRuler, SlidersHorizontal } from 'lucide-react';
-import { Device, FloorPlan, Line, PolygonZone, Station, StationMetric, Stop, SystemMode, TrackPoint } from '../types';
+import { Device, FloorPlan, Line, PolygonZone, SpatialLayer, Station, StationMetric, Stop, SystemMode, TrackPoint } from '../types';
 import { Popover } from './Popover';
 import { interiorOf } from '../layout/interior';
 import { C, FONT_MONO, FONT_SANS, ZONE_TINT, statusOf, trackColor } from '../theme';
@@ -35,6 +35,11 @@ interface FloorPlan2DProps {
   mode?: SystemMode;
   /** Pide al plano que abra una línea (p. ej. al cambiarla en el encabezado). */
   focusLineId?: string | null;
+  /** Abre una zona desde una observación explicable del panel lateral. */
+  focusZoneId?: string | null;
+  /** Activa la capa relacionada con la observación seleccionada. */
+  requestedLayer?: SpatialLayer | null;
+  requestVersion?: number;
   onScopeLineChange?: (lineId: string) => void;
   onEditLayout?: () => void;
   onEditInterior?: (zoneId: string) => void;
@@ -63,12 +68,16 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
   devices = [],
   mode = 'demo',
   focusLineId,
+  focusZoneId,
+  requestedLayer,
+  requestVersion = 0,
   onScopeLineChange,
   onEditLayout,
   onEditInterior,
 }) => {
   const [showSpaghetti, setShowSpaghetti] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(false);
+  const [heatMode, setHeatMode] = useState<'traffic' | 'dwell'>('traffic');
   const [showZones, setShowZones] = useState(true);
   const [showStations, setShowStations] = useState(true);
   const [selectedTrack, setSelectedTrack] = useState<string>('all');
@@ -171,6 +180,29 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
     if (focusLineId && focusLineId !== scopeLineId && areas[focusLineId]) setScope({ kind: 'line', id: focusLineId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusLineId]);
+
+  useEffect(() => {
+    if (!focusZoneId) return;
+    if (focusZoneId === '__plant__') {
+      setScope({ kind: 'plant' });
+      return;
+    }
+    const zone = zones.find((z) => z.id === focusZoneId || z.zone_id === focusZoneId);
+    if (zone) setScope({ kind: 'zone', id: zone.id });
+  }, [focusZoneId, zones, requestVersion]);
+
+  useEffect(() => {
+    if (!requestedLayer) return;
+    if (requestedLayer === 'zones') setShowZones(true);
+    if (requestedLayer === 'routes') {
+      setShowSpaghetti(true);
+      setShowHeatmap(false);
+    }
+    if (requestedLayer === 'traffic' || requestedLayer === 'dwell') {
+      setShowHeatmap(true);
+      setHeatMode(requestedLayer);
+    }
+  }, [requestedLayer, requestVersion]);
 
   // Si el layout cambia y el alcance ya no existe, volver a planta.
   useEffect(() => {
@@ -372,7 +404,17 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
           {scope.kind === 'plant' && <span className="text-[11.5px] text-ink-3 ml-2 hidden md:inline">Elige una línea o estación</span>}
         </nav>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="seg" role="group" aria-label="Capas principales del plano">
+            <button aria-pressed={showZones} onClick={() => setShowZones((v) => !v)}>Zonas</button>
+            <button
+              aria-pressed={showSpaghetti && !showHeatmap}
+              onClick={() => { setShowSpaghetti(true); setShowHeatmap(false); }}
+              title="Selecciona una línea o zona para evitar saturar toda la planta"
+            >Rutas</button>
+            <button aria-pressed={showHeatmap && heatMode === 'traffic'} onClick={() => { setShowHeatmap(true); setHeatMode('traffic'); }}>Tránsito</button>
+            <button aria-pressed={showHeatmap && heatMode === 'dwell'} onClick={() => { setShowHeatmap(true); setHeatMode('dwell'); }}>Permanencia</button>
+          </div>
           <Popover
             label={
               <>
@@ -460,9 +502,13 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                   <line x1="0" y1="0" x2="0" y2="8" stroke={ZONE_TINT.bathroom.pattern} strokeWidth="0.8" />
                   <line x1="0" y1="0" x2="8" y2="0" stroke={ZONE_TINT.bathroom.pattern} strokeWidth="0.8" />
                 </pattern>
-                <radialGradient id="fp-heat">
+                <radialGradient id="fp-heat-traffic">
                   <stop offset="0%" stopColor={C.accent} stopOpacity="0.22" />
                   <stop offset="100%" stopColor={C.accent} stopOpacity="0" />
+                </radialGradient>
+                <radialGradient id="fp-heat-dwell">
+                  <stop offset="0%" stopColor={C.plum} stopOpacity="0.30" />
+                  <stop offset="100%" stopColor={C.plum} stopOpacity="0" />
                 </radialGradient>
               </defs>
 
@@ -551,7 +597,20 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                   visibleTrack(id)
                     ? pts
                         .filter((p, i) => i % 3 === 0 && !isPrivate(p[0], p[1]) && (!scopePoly || pointInPolygon(p[0], p[1], scopePoly)))
-                        .map(([x, y], i) => <circle key={`h-${id}-${i}`} cx={x * PLAN_W} cy={y * planH} r={32} fill="url(#fp-heat)" pointerEvents="none" />)
+                        .map(([x, y, t], i, samples) => {
+                          const dwellSeconds = Math.max(0, Math.min(10, ((samples[i + 1]?.[2] ?? t) - t) / 1000));
+                          const radius = heatMode === 'dwell' ? 24 + dwellSeconds * 2.2 : 32;
+                          return (
+                            <circle
+                              key={`h-${id}-${i}`}
+                              cx={x * PLAN_W}
+                              cy={y * planH}
+                              r={radius}
+                              fill={`url(#fp-heat-${heatMode})`}
+                              pointerEvents="none"
+                            />
+                          );
+                        })
                     : null,
                 )}
 
@@ -656,8 +715,12 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
             <span className="num text-[10.5px] text-ink-2 mb-0.5">{scaleM} m</span>
             <div className="h-[5px] border border-ink border-t-0" style={{ width: ppu * unit * scaleM }} />
           </div>
-          <div className="absolute right-3 bottom-3 text-[11px] text-ink-3 pointer-events-none text-right max-w-[60%]">
-            {scope.kind === 'plant' && showSpaghetti ? 'El spaghetti se muestra por línea o estación' : 'Tracks anónimos · sanitarios solo en conteo agregado'}
+          <div className="absolute right-3 bottom-3 text-[11px] text-ink-3 pointer-events-none text-right max-w-[65%]">
+            {showHeatmap
+              ? `Calor de ${heatMode === 'traffic' ? 'tránsito (posiciones)' : 'permanencia (tiempo)'} · sin zonas sensibles`
+              : scope.kind === 'plant' && showSpaghetti
+                ? 'El spaghetti se segmenta por línea o zona para evitar saturación'
+                : 'Tracks anónimos · zonas sensibles solo en conteo agregado'}
           </div>
         </div>
 

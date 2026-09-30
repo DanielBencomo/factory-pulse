@@ -79,9 +79,10 @@ $env:FP_VISION_TARGET="http://127.0.0.1:8001"
 npm run dev
 ```
 
-Abra `http://localhost:3000`. El dashboard muestra el video con bounding boxes
-en un panel y el plano 2D en otro. Los botones **Cámara en otra ventana** y
-**Plano en otra ventana** abren cada vista por separado.
+Abra `http://localhost:3000`. **Cámara** muestra el video con bounding boxes,
+IDs y zonas; **Planta** muestra el plano 2D como vista principal. Permanecen en
+páginas separadas para conservar legibilidad. El plano permite alternar Zonas,
+Rutas, heatmap de Tránsito y heatmap de Permanencia.
 
 ## Teléfono como cámara RTSP
 

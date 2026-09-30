@@ -4,6 +4,7 @@ import { Sidebar, Page, PAGES } from './components/Sidebar';
 import { FloorPlan2D } from './components/FloorPlan2D';
 import { VisionPanel } from './components/VisionPanel';
 import { ZoneOccupancyPanel } from './components/ZoneOccupancyPanel';
+import { SpatialInsightsPanel } from './components/SpatialInsightsPanel';
 import { KpiStrip, StationTablePanel, AlertsPanel, StopsPanel, SourcesStrip } from './components/DashboardGrid';
 import { StopsModal } from './components/StopsModal';
 import { SimulatorControls } from './components/SimulatorControls';
@@ -13,7 +14,6 @@ import { CalibrationModal } from './components/CalibrationModal';
 import { ExportModal } from './components/ExportModal';
 import { LayoutEditor } from './components/LayoutEditor';
 import { InteriorEditor } from './components/InteriorEditor';
-import { MetricsPage } from './pages/MetricsPage';
 import { DevicesPage } from './pages/DevicesPage';
 import { RecordingsModal } from './components/RecordingsModal';
 import { JustifyStopModal } from './components/JustifyStopModal';
@@ -36,7 +36,13 @@ import {
   Line,
   SystemMode,
   Playback,
+  SpatialLayer,
+  SpatialSummary,
 } from './types';
+
+// ECharts pesa mucho y solo se necesita al abrir Métricas. Cargar esa página
+// bajo demanda mantiene ágil la vista principal de planta/cámara.
+const MetricsPage = React.lazy(() => import('./pages/MetricsPage').then((module) => ({ default: module.MetricsPage })));
 
 const pageFromHash = (): Page => {
   const h = window.location.hash.replace(/^#\/?/, '') as Page;
@@ -65,6 +71,11 @@ export const App: React.FC = () => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [alertRules, setAlertRules] = useState<AlertRuleConfig[]>([]);
   const [modules, setModules] = useState<CatalogModule[]>([]);
+  const [spatial, setSpatial] = useState<SpatialSummary | null>(null);
+  const [spatialError, setSpatialError] = useState<string | null>(null);
+  const [focusZoneId, setFocusZoneId] = useState<string | null>(null);
+  const [mapLayer, setMapLayer] = useState<SpatialLayer | null>(null);
+  const [mapRequestVersion, setMapRequestVersion] = useState(0);
 
   // Simulador
   const [simRunning, setSimRunning] = useState<boolean>(true);
@@ -106,6 +117,15 @@ export const App: React.FC = () => {
     api.getMetrics(windowMinutes, lineId).then(setMetrics).catch(console.error);
   }, [lineId, windowMinutes]);
 
+  const refreshSpatial = useCallback(() => {
+    api.getSpatialSummary('plant', null, windowMinutes, mode)
+      .then((value) => {
+        setSpatial(value);
+        setSpatialError(null);
+      })
+      .catch((error) => setSpatialError(error instanceof Error ? error.message : 'Error desconocido'));
+  }, [windowMinutes, mode]);
+
   const refreshDevices = useCallback(() => api.listDevices().then(setDevices).catch(console.error), []);
 
   // Carga completa. Se repite cada vez que vuelve la conexión con el servidor, para que
@@ -138,6 +158,12 @@ export const App: React.FC = () => {
     const id = setInterval(refreshAnalytics, 10_000);
     return () => clearInterval(id);
   }, [refreshAnalytics]);
+
+  useEffect(() => {
+    refreshSpatial();
+    const id = setInterval(refreshSpatial, 5_000);
+    return () => clearInterval(id);
+  }, [refreshSpatial]);
 
   // El estado de los dispositivos depende del tiempo transcurrido: se consulta seguido.
   useEffect(() => {
@@ -279,14 +305,8 @@ export const App: React.FC = () => {
   } else if (page === 'planta') {
     content = (
       <div className="space-y-4">
-        <KpiStrip analytics={analytics} />
-        <SourcesStrip devices={devices} tracksCount={Object.keys(tracks).length} mode={mode} />
-        <ZoneOccupancyPanel mode={mode} />
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-          <div className="xl:col-span-7 min-w-0">
-            <VisionPanel mode={mode} />
-          </div>
-          <div className="xl:col-span-5 min-w-0">
+          <div className="xl:col-span-8 min-w-0">
             <FloorPlan2D
               floorPlan={floorPlan}
               zones={zones}
@@ -299,12 +319,29 @@ export const App: React.FC = () => {
               devices={devices}
               mode={mode}
               focusLineId={focusLineId}
+              focusZoneId={focusZoneId}
+              requestedLayer={mapLayer}
+              requestVersion={mapRequestVersion}
               onScopeLineChange={setLineId}
               onEditLayout={() => navigate('layout')}
               onEditInterior={setInteriorZoneId}
             />
           </div>
+          <div className="xl:col-span-4 min-w-0">
+            <SpatialInsightsPanel
+              data={spatial}
+              error={spatialError}
+              onRetry={refreshSpatial}
+              onExplore={(zoneId, layer) => {
+                setFocusZoneId(zoneId ?? '__plant__');
+                setMapLayer(layer);
+                setMapRequestVersion((version) => version + 1);
+              }}
+            />
+          </div>
         </div>
+        <KpiStrip analytics={analytics} />
+        <SourcesStrip devices={devices} tracksCount={Object.keys(tracks).length} mode={mode} />
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
           <div className="xl:col-span-7 min-w-0">
             <StationTablePanel analytics={analytics} metrics={metrics} lineName={lineName} />
@@ -343,7 +380,11 @@ export const App: React.FC = () => {
       </div>
     );
   } else if (page === 'metricas') {
-    content = <MetricsPage analytics={analytics} lineName={lineName} />;
+    content = (
+      <React.Suspense fallback={<div className="panel p-10 text-center text-ink-3 text-[13px]">Cargando analíticas…</div>}>
+        <MetricsPage analytics={analytics} spatial={spatial} lineName={lineName} />
+      </React.Suspense>
+    );
   } else if (page === 'eventos') {
     content = (
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
@@ -478,6 +519,7 @@ export const App: React.FC = () => {
           await api.resetSimulator(true);
           setSimScene(1);
           refreshAnalytics();
+          refreshSpatial();
         }}
         onSetScene={async (n) => {
           await api.setSimulatorScene(n);

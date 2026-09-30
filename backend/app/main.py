@@ -29,6 +29,7 @@ from app.api.routes_analytics import router as analytics_router
 from app.api.routes_signals import router as signals_router
 from app.api.routes_recordings import router as recordings_router
 from app.api.routes_rfid import router as rfid_router
+from app.api.routes_spatial import router as spatial_router
 from app.live.processor import live_processor
 from app.live.replay import replayer
 
@@ -100,6 +101,7 @@ app.include_router(analytics_router, prefix=settings.API_V1_STR, tags=["Analytic
 app.include_router(signals_router, prefix=settings.API_V1_STR, tags=["Signals"])
 app.include_router(recordings_router, prefix=settings.API_V1_STR, tags=["Recordings"])
 app.include_router(rfid_router, prefix=settings.API_V1_STR, tags=["RFID"])
+app.include_router(spatial_router, prefix=settings.API_V1_STR, tags=["Spatial Analytics"])
 
 # WebSocket Endpoint
 @app.websocket("/ws")

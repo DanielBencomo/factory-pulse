@@ -155,6 +155,40 @@ class VisionProviderHelpersTest(unittest.TestCase):
         self.assertEqual(detections[0].track_id, "CAM-P7")
         self.assertEqual((detections[0].foot_x, detections[0].foot_y), (30.0, 100.0))
 
+    def test_yolo_detection_is_visible_before_bytetrack_assigns_an_id(self):
+        class Tensor:
+            def __init__(self, value):
+                self.value = value
+
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return self.value
+
+        class Boxes:
+            xyxy = Tensor([[10.0, 20.0, 50.0, 100.0]])
+            conf = Tensor([0.87])
+            id = None
+
+            def __len__(self):
+                return 1
+
+        class FakeYOLO:
+            def __init__(self, _model):
+                pass
+
+            def track(self, **_kwargs):
+                return [SimpleNamespace(boxes=Boxes())]
+
+        with patch.dict("sys.modules", {"ultralytics": SimpleNamespace(YOLO=FakeYOLO)}):
+            tracker = YoloByteTracker("fake.pt", "bytetrack.yaml", 0.25, 0.55, 960, "cpu", "CAM")
+            detections = tracker.detect(object())
+
+        self.assertEqual(len(detections), 1)
+        self.assertFalse(detections[0].confirmed)
+        self.assertTrue(detections[0].track_id.startswith("CAM-pending-"))
+
     def test_normalized_mapping_roundtrip(self):
         calibration = FloorCalibration("hardware/calibration.synthetic.json")
         camera = [[0.12, 0.23], [0.75, 0.81]]

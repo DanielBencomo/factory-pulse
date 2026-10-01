@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # Si se define, los lectores RFID deben enviarlo en X-Factory-Pulse-Key.
     RFID_INGEST_TOKEN: str = os.getenv("RFID_INGEST_TOKEN", "")
 
+    # Cámaras. El frontend nunca depende de un puerto fijo: el backend asigna
+    # uno por proveedor local y publica todos los flujos bajo /api/cameras.
+    VISION_PYTHON: str = os.getenv("VISION_PYTHON", "")
+    VISION_BACKEND_URL: str = os.getenv("VISION_BACKEND_URL", "http://127.0.0.1:8000")
+    VISION_PORT_START: int = int(os.getenv("VISION_PORT_START", "8101"))
+    VISION_PORT_END: int = int(os.getenv("VISION_PORT_END", "8199"))
+    CAMERA_SECRET_KEY: str = os.getenv("CAMERA_SECRET_KEY", "")
+    CAMERA_KEY_FILE: str = os.getenv("CAMERA_KEY_FILE", ".factory_pulse_camera.key")
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="allow")
 
 settings = Settings()

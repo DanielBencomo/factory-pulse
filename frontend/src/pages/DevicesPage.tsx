@@ -87,13 +87,15 @@ export const DevicesPage: React.FC<{
   useEffect(() => {
     api.getConnectInfo().then(setInfo).catch(() => setInfo(null));
     api.getRFIDConfig().then(setRfid).catch(() => setRfid(null));
-    api.listDeviceTypes().then(setTypes).catch(() => setTypes([]));
+    // Las cámaras tienen URL, credenciales, perfiles YOLO y mosaico propios;
+    // se registran en su pestaña para no reducirlas a un latido genérico.
+    api.listDeviceTypes().then((items) => setTypes(items.filter((item) => item.value !== 'camera_vision'))).catch(() => setTypes([]));
     const id = setInterval(() => tick((n) => n + 1), 1000); // refresca los "hace X s"
     return () => clearInterval(id);
   }, [mode]);
 
-  const real = devices.filter((d) => !d.simulated && d.is_active);
-  const discovered = devices.filter((d) => !d.simulated && !d.is_active);
+  const real = devices.filter((d) => !d.simulated && d.is_active && d.type !== 'camera_vision');
+  const discovered = devices.filter((d) => !d.simulated && !d.is_active && d.type !== 'camera_vision');
   const demo = devices.filter((d) => d.simulated);
   const connected = real.filter((d) => d.status === 'online').length;
   const typeLabel = (t: string) => types.find((x) => x.value === t)?.label ?? t;
@@ -251,11 +253,16 @@ export const DevicesPage: React.FC<{
       {/* Registrados */}
       <Panel
         title="Dispositivos registrados"
-        subtitle="Cada uno queda esperando conexión hasta su primer latido. Vincúlalos a sensores desde “Editar interior” de cada área."
+        subtitle="ESP32 y lectores quedan esperando su primer latido. Las cámaras se agregan y configuran directamente en la pestaña Cámara."
         meta={
-          <button className="btn btn-sm btn-primary" onClick={() => setFormOpen((o) => !o)}>
-            <Plus className="h-3.5 w-3.5" /> Registrar dispositivo
-          </button>
+          <span className="flex gap-2">
+            <button className="btn btn-sm btn-ghost" onClick={() => { window.location.hash = '/camara'; }}>
+              Configurar cámaras
+            </button>
+            <button className="btn btn-sm btn-primary" onClick={() => setFormOpen((o) => !o)}>
+              <Plus className="h-3.5 w-3.5" /> Registrar dispositivo
+            </button>
+          </span>
         }
       >
         {formOpen && (

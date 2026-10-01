@@ -150,6 +150,76 @@ export interface Device {
   created_at: string;
 }
 
+export type CameraSourceType = 'rtsp' | 'http' | 'webcam' | 'provider';
+export type DetectionProfile = 'fast' | 'balanced' | 'precision';
+
+export interface CameraConfig {
+  camera_id: string;
+  device_id: string;
+  name: string;
+  configured: boolean;
+  source_type: CameraSourceType | null;
+  source_url?: string | null;
+  username?: string | null;
+  has_password: boolean;
+  webcam_index: number;
+  rtsp_transport: 'tcp' | 'udp';
+  provider_mode?: 'managed' | 'external' | null;
+  provider_url?: string | null;
+  provider_port?: number | null;
+  calibration_path?: string | null;
+  profile: DetectionProfile;
+  model?: string | null;
+  confidence?: number | null;
+  iou?: number | null;
+  image_size?: number | null;
+  processing_width?: number | null;
+  processing_height?: number | null;
+  auto_start: boolean;
+  show_annotations: boolean;
+  enabled: boolean;
+  display_order: number;
+  device_status: DeviceStatus;
+  last_heartbeat?: string | null;
+  runtime: { process: string; pid?: number | null; exit_code?: number; error?: string | null };
+  health_url: string;
+  annotated_stream_url: string;
+  raw_stream_url: string;
+  floor_stream_url: string;
+  snapshot_url: string;
+  map_url: string;
+}
+
+export interface CameraProfile {
+  value: DetectionProfile;
+  label: string;
+  description: string;
+  model: string;
+  confidence: number;
+  iou: number;
+  image_size: number;
+  width: number;
+  height: number;
+}
+
+export interface CameraInput {
+  camera_id: string;
+  name: string;
+  source_type: CameraSourceType;
+  source_url?: string | null;
+  username?: string | null;
+  password?: string | null;
+  webcam_index?: number;
+  rtsp_transport?: 'tcp' | 'udp';
+  provider_url?: string | null;
+  calibration_path?: string | null;
+  profile?: DetectionProfile;
+  auto_start?: boolean;
+  show_annotations?: boolean;
+  enabled?: boolean;
+  display_order?: number;
+}
+
 export type DeviceStatus = 'online' | 'offline' | 'waiting' | 'warning';
 export type SystemMode = 'demo' | 'live' | 'replay';
 

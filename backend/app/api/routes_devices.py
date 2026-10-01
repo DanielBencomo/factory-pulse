@@ -10,7 +10,8 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import get_db
 from app.devices.registry import device_status, touch_device
-from app.models.db_models import DBDevice, DBAuditLog
+from app.models.db_models import DBDevice, DBAuditLog, DBCameraConfig
+from app.cameras.manager import camera_manager
 from app.simulator.engine import simulator
 
 router = APIRouter()
@@ -130,6 +131,12 @@ async def delete_device(device_id: str, session: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
     if dev.simulated:
         raise HTTPException(status_code=409, detail="Los nodos de demostración no se eliminan")
+    camera = (
+        await session.execute(select(DBCameraConfig).where(DBCameraConfig.device_id == device_id))
+    ).scalar_one_or_none()
+    if camera:
+        camera_manager.stop(device_id)
+        await session.delete(camera)
     await session.delete(dev)
     await session.commit()
 

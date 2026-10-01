@@ -44,17 +44,23 @@ async def touch_device(
     was_online = dev is not None and device_status(dev, now) == "online"
 
     if dev is None:
+        detected_type = "camera_vision" if (firmware or "").lower().startswith("vision-yolo") else "esp32"
         dev = DBDevice(
             id=f"dev-{uuid.uuid4().hex[:8]}",
             device_id=device_id,
             name=f"Nuevo · {device_id}",
-            type="esp32",
+            type=detected_type,
             ingest_mode=ingest_mode or "http",
             is_active=False,
             simulated=False,
             created_at=now,
         )
         session.add(dev)
+
+    # Un proveedor iniciado manualmente se descubre en la pestaña Cámaras y se
+    # puede reclamar allí con su URL HTTP; no obliga a pasar por Dispositivos.
+    if not dev.is_active and (firmware or "").lower().startswith("vision-yolo"):
+        dev.type = "camera_vision"
 
     dev.last_heartbeat = now
     dev.status = "online"

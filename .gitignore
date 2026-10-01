@@ -43,6 +43,8 @@ factory_pulse.db
 .env.development.local
 .env.test.local
 .env.production.local
+.factory_pulse_camera.key
+runtime/
 
 # Vite / Frontend build
 frontend/dist/

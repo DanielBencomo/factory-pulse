@@ -47,7 +47,13 @@ except ImportError:  # permite consultar --help y ejecutar pruebas de helpers si
     requests = None  # type: ignore[assignment]
 
 
-VERSION = "vision-yolo-0.5.0"
+VERSION = "vision-yolo-0.6.0"
+
+DETECTION_PROFILES: dict[str, dict[str, Any]] = {
+    "fast": {"model": "yolo11n.pt", "confidence": 0.28, "iou": 0.55, "image_size": 640},
+    "balanced": {"model": "yolo11s.pt", "confidence": 0.25, "iou": 0.55, "image_size": 960},
+    "precision": {"model": "yolo11m.pt", "confidence": 0.20, "iou": 0.60, "image_size": 1280},
+}
 
 
 def log(message: str) -> None:
@@ -140,6 +146,9 @@ class PersonDetection:
     floor_y: float | None = None
     zone: Zone | None = None
     speed_m_s: float | None = None
+    # YOLO puede detectar una persona antes de que ByteTrack le asigne ID. Se
+    # dibuja y cuenta, pero no se publica como trayectoria hasta confirmarse.
+    confirmed: bool = True
 
 
 @dataclass(slots=True)
@@ -486,22 +495,21 @@ class YoloByteTracker:
         confidences = boxes.conf.cpu().tolist()
         track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(coordinates)
         detections: list[PersonDetection] = []
-        for xyxy, score, number in zip(coordinates, confidences, track_ids):
-            if number is None:
-                # Se dibuja la detección desde el primer frame, pero no se publica hasta
-                # que ByteTrack haya asignado un identificador persistente.
-                continue
+        for index, (xyxy, score, number) in enumerate(zip(coordinates, confidences, track_ids)):
             x1, y1, x2, y2 = (round(v) for v in xyxy)
             foot_x = (x1 + x2) / 2.0
             foot_y = float(y2)
+            confirmed = number is not None
+            track_number = int(number) if confirmed else 0
             detections.append(
                 PersonDetection(
-                    track_id=f"{self.track_prefix}-P{number}",
-                    track_number=int(number),
+                    track_id=(f"{self.track_prefix}-P{track_number}" if confirmed else f"{self.track_prefix}-pending-{index}"),
+                    track_number=track_number,
                     box=(x1, y1, x2, y2),
                     confidence=float(score),
                     foot_x=foot_x,
                     foot_y=foot_y,
+                    confirmed=confirmed,
                 )
             )
         return detections
@@ -736,6 +744,8 @@ class VisionRenderer:
             detection.zone = next(
                 (zone for zone in zones if point_in_polygon(x, y, zone.polygon)), None
             )
+            if not detection.confirmed:
+                continue
             previous_speed = self._last_speed_position.get(detection.track_id)
             if previous_speed and now > previous_speed.timestamp:
                 dx_m = (x - previous_speed.x) * self.calibration.width_m
@@ -845,11 +855,15 @@ class VisionRenderer:
             ):
                 continue
             private = bool(detection.zone and detection.zone.is_aggregated_only)
-            color = (120, 120, 120) if private else self._color(detection.track_id)
+            color = (120, 120, 120) if private or not detection.confirmed else self._color(detection.track_id)
             x1, y1, x2, y2 = detection.box
             self.cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             self.cv2.circle(frame, (int(detection.foot_x), int(detection.foot_y)), 5, color, -1)
-            identity = "Persona · datos agregados" if private else f"Persona {detection.track_number}"
+            identity = (
+                "Persona · datos agregados" if private
+                else f"Persona {detection.track_number}" if detection.confirmed
+                else "Persona detectada · asignando ID"
+            )
             zone_name = detection.zone.name if detection.zone else "Fuera de zona"
             label = f"{identity} | {zone_name} | {detection.confidence:.0%}"
             (text_w, text_h), _ = self.cv2.getTextSize(label, self.cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
@@ -945,10 +959,10 @@ class VisionRenderer:
                 continue
             pixel = self._floor_pixel(detection.floor_x, detection.floor_y)
             private = bool(detection.zone and detection.zone.is_aggregated_only)
-            color = (120, 120, 120) if private else self._color(detection.track_id)
+            color = (120, 120, 120) if private or not detection.confirmed else self._color(detection.track_id)
             self.cv2.circle(canvas, pixel, 7, (255, 255, 255), -1)
             self.cv2.circle(canvas, pixel, 5, color, -1)
-            if not private:
+            if not private and detection.confirmed:
                 self.cv2.putText(
                     canvas,
                     f"P{detection.track_number}",
@@ -1015,6 +1029,7 @@ class FrameHub:
         self.model = model
         self._lock = threading.Condition()
         self._camera_jpeg: bytes | None = None
+        self._raw_jpeg: bytes | None = None
         self._floor_jpeg: bytes | None = None
         self._sequence = 0
         self._status: dict[str, Any] = {
@@ -1030,14 +1045,16 @@ class FrameHub:
             "frame_height": 0,
         }
 
-    def update(self, camera: Any, floor: Any, **status: Any) -> None:
+    def update(self, camera: Any, floor: Any, raw: Any | None = None, **status: Any) -> None:
         params = [self.cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
         ok_camera, encoded_camera = self.cv2.imencode(".jpg", camera, params)
         ok_floor, encoded_floor = self.cv2.imencode(".jpg", floor, params)
-        if not ok_camera or not ok_floor:
+        ok_raw, encoded_raw = self.cv2.imencode(".jpg", raw if raw is not None else camera, params)
+        if not ok_camera or not ok_floor or not ok_raw:
             return
         with self._lock:
             self._camera_jpeg = encoded_camera.tobytes()
+            self._raw_jpeg = encoded_raw.tobytes()
             self._floor_jpeg = encoded_floor.tobytes()
             self._sequence += 1
             self._status.update(status)
@@ -1053,15 +1070,16 @@ class FrameHub:
         with self._lock:
             return dict(self._status)
 
-    def wait_for_frame(self, floor: bool, previous: int, timeout: float = 2.0) -> tuple[int, bytes | None]:
+    def wait_for_frame(self, view: str, previous: int, timeout: float = 2.0) -> tuple[int, bytes | None]:
         with self._lock:
             if self._sequence == previous:
                 self._lock.wait(timeout)
-            return self._sequence, self._floor_jpeg if floor else self._camera_jpeg
+            frame = self._floor_jpeg if view == "floor" else self._raw_jpeg if view == "raw" else self._camera_jpeg
+            return self._sequence, frame
 
-    def snapshot(self, floor: bool) -> bytes | None:
+    def snapshot(self, view: str) -> bytes | None:
         with self._lock:
-            return self._floor_jpeg if floor else self._camera_jpeg
+            return self._floor_jpeg if view == "floor" else self._raw_jpeg if view == "raw" else self._camera_jpeg
 
 
 class VisionHTTPServer:
@@ -1095,12 +1113,12 @@ class VisionHTTPServer:
                     self.send_header("Content-Length", str(length))
                 self.end_headers()
 
-            def _mjpeg(self, floor: bool) -> None:
+            def _mjpeg(self, view: str) -> None:
                 self._headers(HTTPStatus.OK, "multipart/x-mixed-replace; boundary=frame")
                 sequence = -1
                 try:
                     while True:
-                        sequence, frame = hub.wait_for_frame(floor, sequence)
+                        sequence, frame = hub.wait_for_frame(view, sequence)
                         if frame is None:
                             continue
                         self.wfile.write(b"--frame\r\n")
@@ -1118,11 +1136,14 @@ class VisionHTTPServer:
                     self._headers(HTTPStatus.OK, "application/json; charset=utf-8", len(body))
                     self.wfile.write(body)
                 elif path == "/vision/annotated.mjpg":
-                    self._mjpeg(False)
+                    self._mjpeg("annotated")
+                elif path == "/vision/raw.mjpg":
+                    self._mjpeg("raw")
                 elif path == "/vision/floor.mjpg":
-                    self._mjpeg(True)
-                elif path in {"/vision/snapshot.jpg", "/vision/floor.jpg"}:
-                    body = hub.snapshot(path.endswith("floor.jpg"))
+                    self._mjpeg("floor")
+                elif path in {"/vision/snapshot.jpg", "/vision/raw.jpg", "/vision/floor.jpg"}:
+                    view = "floor" if path.endswith("floor.jpg") else "raw" if path.endswith("raw.jpg") else "annotated"
+                    body = hub.snapshot(view)
                     if body is None:
                         self._headers(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain", 0)
                     else:
@@ -1273,12 +1294,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--api", default="http://localhost:8000", help="backend Factory Pulse")
     parser.add_argument("--device-id", default="cam-overhead-1", help="ID anónimo de la cámara")
-    parser.add_argument("--source", default="webcam", help="webcam | índice | MP4 | HTTP | RTSP")
-    parser.add_argument("--model", default="yolo11n.pt", help="modelo Ultralytics")
+    parser.add_argument("--source", default=os.getenv("FP_CAMERA_SOURCE", "webcam"), help="webcam | índice | MP4 | HTTP | RTSP")
+    parser.add_argument("--profile", choices=tuple(DETECTION_PROFILES), default="balanced", help="perfil base de detección")
+    parser.add_argument("--model", default=None, help="modelo Ultralytics; vacío usa el perfil")
     parser.add_argument("--tracker", default="bytetrack.yaml", help="configuración de tracker Ultralytics")
-    parser.add_argument("--confidence", type=float, default=0.35)
-    parser.add_argument("--iou", type=float, default=0.55)
-    parser.add_argument("--image-size", type=int, default=640)
+    parser.add_argument("--confidence", type=float, default=None)
+    parser.add_argument("--iou", type=float, default=None)
+    parser.add_argument("--image-size", type=int, default=None)
     parser.add_argument("--device", default=None, help="cpu, 0, 1…; vacío = selección automática")
     parser.add_argument("--width", type=int, default=1280, help="ancho máximo de procesamiento; webcam solicita este ancho")
     parser.add_argument("--height", type=int, default=720, help="alto máximo de procesamiento; webcam solicita este alto")
@@ -1309,6 +1331,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    profile = DETECTION_PROFILES[args.profile]
+    args.model = args.model or profile["model"]
+    args.confidence = args.confidence if args.confidence is not None else profile["confidence"]
+    args.iou = args.iou if args.iou is not None else profile["iou"]
+    args.image_size = args.image_size or profile["image_size"]
     if not 0 < args.confidence <= 1 or not 0 < args.iou <= 1:
         raise SystemExit("--confidence y --iou deben estar entre 0 y 1")
     if args.publish_interval <= 0 or args.sample_interval <= 0:
@@ -1421,8 +1448,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             hub.update(
                 annotated,
                 floor,
+                raw=frame,
                 fps=round(smoothed_fps, 1),
-                tracks=len(detections),
+                tracks=sum(1 for item in detections if item.confirmed),
+                detections=len(detections),
                 zones=len(zones),
                 calibrated=calibration.calibrated,
                 backend_ok=publisher.last_ok_at is not None and time.time() - publisher.last_ok_at < 15,
@@ -1440,6 +1469,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     if detection.zone:
                         zone_counts[detection.zone.zone_id] += 1
                     if detection.zone and detection.zone.is_aggregated_only:
+                        continue
+                    if not detection.confirmed:
                         continue
                     positions.append(
                         {

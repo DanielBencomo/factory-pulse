@@ -30,8 +30,10 @@ from app.api.routes_signals import router as signals_router
 from app.api.routes_recordings import router as recordings_router
 from app.api.routes_rfid import router as rfid_router
 from app.api.routes_spatial import router as spatial_router
+from app.api.routes_cameras import router as cameras_router
 from app.live.processor import live_processor
 from app.live.replay import replayer
+from app.cameras.manager import camera_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +57,9 @@ async def lifespan(app: FastAPI):
         simulator.start(speed=settings.SIMULATOR_SPEED)
     # Procesa datos reales (en vivo / reproducción): posiciones, estados, reglas.
     live_processor.start()
+    # Cada cámara administrada obtiene su propio proveedor y puerto. Una fuente
+    # caída no impide que el backend ni las demás cámaras estén disponibles.
+    await camera_manager.start_configured()
     logger.info("Factory Pulse is ready and listening!")
     
     yield
@@ -64,6 +69,7 @@ async def lifespan(app: FastAPI):
     replayer.stop()
     live_processor.stop()
     mqtt_adapter.stop()
+    camera_manager.stop_all()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -102,6 +108,7 @@ app.include_router(signals_router, prefix=settings.API_V1_STR, tags=["Signals"])
 app.include_router(recordings_router, prefix=settings.API_V1_STR, tags=["Recordings"])
 app.include_router(rfid_router, prefix=settings.API_V1_STR, tags=["RFID"])
 app.include_router(spatial_router, prefix=settings.API_V1_STR, tags=["Spatial Analytics"])
+app.include_router(cameras_router, prefix=settings.API_V1_STR, tags=["Cameras"])
 
 # WebSocket Endpoint
 @app.websocket("/ws")

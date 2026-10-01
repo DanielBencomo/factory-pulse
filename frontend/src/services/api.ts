@@ -3,7 +3,7 @@ import {
   Alert, AlertRuleConfig, MetricsSummary, DashboardConfig,
   CatalogModule, ScaleCalibration, Layout, Line, TrackPoint,
   Analytics, ConnectInfo, SystemMode, InteriorItem, Badge, Recording, Playback, ZoneSignals,
-  OccupancySnapshot, RFIDConfig, ZoneType, SpatialSummary
+  OccupancySnapshot, RFIDConfig, ZoneType, SpatialSummary, CameraConfig, CameraInput, CameraProfile
 } from '../types';
 
 const API_BASE = '/api';
@@ -225,6 +225,59 @@ export const api = {
   // Devices
   async listDevices(): Promise<Device[]> {
     const res = await fetch(`${API_BASE}/devices`);
+    return res.json();
+  },
+
+  // Cámaras registradas y proveedores de visión. El navegador nunca necesita
+  // conocer el puerto interno que se asignó a cada proceso local.
+  async listCameras(): Promise<CameraConfig[]> {
+    const res = await fetch(`${API_BASE}/cameras`);
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudieron leer las cámaras'));
+    return res.json();
+  },
+
+  async listCameraProfiles(): Promise<CameraProfile[]> {
+    const res = await fetch(`${API_BASE}/cameras/profiles`);
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudieron leer los perfiles'));
+    return res.json();
+  },
+
+  async registerCamera(camera: CameraInput): Promise<CameraConfig> {
+    const res = await fetch(`${API_BASE}/cameras`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(camera),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo registrar la cámara'));
+    return res.json();
+  },
+
+  async updateCamera(cameraId: string, patch: Partial<CameraInput>): Promise<CameraConfig> {
+    const res = await fetch(`${API_BASE}/cameras/${encodeURIComponent(cameraId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo actualizar la cámara'));
+    return res.json();
+  },
+
+  async deleteCamera(cameraId: string) {
+    const res = await fetch(`${API_BASE}/cameras/${encodeURIComponent(cameraId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo eliminar la cámara'));
+  },
+
+  async startCamera(cameraId: string) {
+    const res = await fetch(`${API_BASE}/cameras/${encodeURIComponent(cameraId)}/start`, { method: 'POST' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo iniciar la cámara'));
+    return res.json();
+  },
+
+  async stopCamera(cameraId: string) {
+    const res = await fetch(`${API_BASE}/cameras/${encodeURIComponent(cameraId)}/stop`, { method: 'POST' });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo detener la cámara'));
+    return res.json();
+  },
+
+  async probeCamera(cameraId: string) {
+    const res = await fetch(`${API_BASE}/cameras/${encodeURIComponent(cameraId)}/probe`, { method: 'POST' });
+    if (!res.ok) throw new Error(await errorText(res, 'La prueba de conexión falló'));
     return res.json();
   },
 

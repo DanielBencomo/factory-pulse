@@ -103,6 +103,43 @@ class DBDevice(Base):
     simulated = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class DBCameraConfig(Base):
+    """Configuración de una fuente de video y de su proveedor de analítica.
+
+    La contraseña nunca se devuelve al navegador y se guarda cifrada. El
+    dispositivo relacionado conserva el latido/estado operativo común al resto
+    del hardware.
+    """
+    __tablename__ = "camera_configs"
+
+    id = Column(String(64), primary_key=True)
+    device_id = Column(String(64), ForeignKey("devices.device_id"), unique=True, index=True, nullable=False)
+    source_type = Column(String(24), default="rtsp", nullable=False)  # rtsp | http | webcam | provider
+    source_url = Column(Text, nullable=True)  # sin usuario ni contraseña
+    username = Column(String(128), nullable=True)
+    password_encrypted = Column(Text, nullable=True)
+    webcam_index = Column(Integer, default=0)
+    rtsp_transport = Column(String(8), default="tcp")
+    provider_mode = Column(String(16), default="managed")  # managed | external
+    provider_url = Column(Text, nullable=True)
+    provider_port = Column(Integer, nullable=True)
+    profile = Column(String(24), default="balanced")
+    model = Column(String(64), default="yolo11s.pt")
+    confidence = Column(Float, default=0.25)
+    iou = Column(Float, default=0.55)
+    image_size = Column(Integer, default=960)
+    processing_width = Column(Integer, default=1920)
+    processing_height = Column(Integer, default=1080)
+    analytics_enabled = Column(Boolean, default=True)
+    show_annotations = Column(Boolean, default=True)
+    auto_start = Column(Boolean, default=True)
+    enabled = Column(Boolean, default=True)
+    display_order = Column(Integer, default=0)
+    calibration_path = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class DBStop(Base):
     __tablename__ = "stops"
 

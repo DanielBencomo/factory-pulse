@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar, Page, PAGES } from './components/Sidebar';
 import { FloorPlan2D } from './components/FloorPlan2D';
-import { VisionPanel } from './components/VisionPanel';
 import { ZoneOccupancyPanel } from './components/ZoneOccupancyPanel';
 import { SpatialInsightsPanel } from './components/SpatialInsightsPanel';
 import { KpiStrip, StationTablePanel, AlertsPanel, StopsPanel, SourcesStrip } from './components/DashboardGrid';
@@ -15,6 +14,7 @@ import { ExportModal } from './components/ExportModal';
 import { LayoutEditor } from './components/LayoutEditor';
 import { InteriorEditor } from './components/InteriorEditor';
 import { DevicesPage } from './pages/DevicesPage';
+import { CamerasPage } from './pages/CamerasPage';
 import { RecordingsModal } from './components/RecordingsModal';
 import { JustifyStopModal } from './components/JustifyStopModal';
 import { api } from './services/api';
@@ -38,6 +38,7 @@ import {
   Playback,
   SpatialLayer,
   SpatialSummary,
+  CameraConfig,
 } from './types';
 
 // ECharts pesa mucho y solo se necesita al abrir Métricas. Cargar esa página
@@ -66,6 +67,7 @@ export const App: React.FC = () => {
   const [stations, setStations] = useState<Station[]>([]);
   const [lines, setLines] = useState<Line[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [cameras, setCameras] = useState<CameraConfig[]>([]);
   const [stops, setStops] = useState<Stop[]>([]);
   const [stopReasons, setStopReasons] = useState<StopReason[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -127,12 +129,14 @@ export const App: React.FC = () => {
   }, [windowMinutes, mode]);
 
   const refreshDevices = useCallback(() => api.listDevices().then(setDevices).catch(console.error), []);
+  const refreshCameras = useCallback(() => api.listCameras().then(setCameras).catch(console.error), []);
 
   // Carga completa. Se repite cada vez que vuelve la conexión con el servidor, para que
   // un reinicio del backend durante la demo no deje la pantalla vacía.
   const loadAll = useCallback(() => {
     refreshLayout().catch(console.error);
     refreshDevices();
+    refreshCameras();
     api.getSystemMode().then((m) => {
       setMode(m.mode);
       setSimRunning(m.simulator_running);
@@ -147,7 +151,7 @@ export const App: React.FC = () => {
         setModules(mods);
       })
       .catch(console.error);
-  }, [refreshLayout, refreshDevices]);
+  }, [refreshLayout, refreshDevices, refreshCameras]);
 
   useEffect(() => {
     loadAll();
@@ -167,9 +171,12 @@ export const App: React.FC = () => {
 
   // El estado de los dispositivos depende del tiempo transcurrido: se consulta seguido.
   useEffect(() => {
-    const id = setInterval(refreshDevices, 5_000);
+    const id = setInterval(() => {
+      refreshDevices();
+      refreshCameras();
+    }, 5_000);
     return () => clearInterval(id);
-  }, [refreshDevices]);
+  }, [refreshDevices, refreshCameras]);
 
   /* ── tiempo real ── */
   useEffect(() => {
@@ -200,6 +207,7 @@ export const App: React.FC = () => {
         refreshLayout().catch(console.error);
       } else if (msg.type === 'DEVICE_CONNECTED') {
         refreshDevices();
+        refreshCameras();
       } else if (msg.type === 'MODE_CHANGED') {
         setMode(msg.mode);
         if (msg.mode !== 'demo') setTracks({});
@@ -216,7 +224,7 @@ export const App: React.FC = () => {
       clearInterval(slow);
       if (pending !== null) clearTimeout(pending);
     };
-  }, [refreshLayout, refreshDevices, loadAll]);
+  }, [refreshLayout, refreshDevices, refreshCameras, loadAll]);
 
   /* ── acciones ── */
   const changeMode = async (m: SystemMode) => {
@@ -278,8 +286,8 @@ export const App: React.FC = () => {
 
   /* ── derivados ── */
   const lineName = lines.find((l) => l.id === lineId)?.name;
-  const realDevices = devices.filter((d) => !d.simulated && d.is_active);
-  const pendingDevices = devices.filter((d) => !d.simulated && !d.is_active).length;
+  const realDevices = devices.filter((d) => !d.simulated && d.is_active && d.type !== 'camera_vision');
+  const pendingDevices = devices.filter((d) => !d.simulated && !d.is_active && d.type !== 'camera_vision').length;
   const openStops = stops.filter((s) => s.status === 'open').length;
   const interiorZone = zones.find((z) => z.id === interiorZoneId) ?? null;
   const pageTitle = interiorZone ? `Interior · ${interiorZone.name}` : PAGES.find((p) => p.id === page)?.title ?? '';
@@ -367,13 +375,10 @@ export const App: React.FC = () => {
   } else if (page === 'camara') {
     content = (
       <div className="space-y-4">
-        <VisionPanel
-          mode={mode}
-          enableMapping
-          floorPlan={floorPlan}
-          zones={zones}
-          lines={lines}
-          stations={stations}
+        <CamerasPage
+          cameras={cameras} mode={mode} floorPlan={floorPlan}
+          zones={zones} lines={lines} stations={stations}
+          onChanged={async () => { await Promise.all([refreshCameras(), refreshDevices()]); }}
           onLayoutChanged={refreshLayout}
         />
         <ZoneOccupancyPanel mode={mode} />

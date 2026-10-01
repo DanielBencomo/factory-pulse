@@ -10,7 +10,7 @@ de visión es un proceso Python independiente:
 4. usa el centro inferior del bounding box como posición de los pies;
 5. proyecta esa posición al plano mediante una homografía opcional;
 6. publica X/Y en el endpoint existente `/api/events/batch`;
-7. expone el video anotado al dashboard en el puerto 8001.
+7. expone video anotado y limpio al backend, que los publica por ID de cámara.
 
 No hay reconocimiento facial. El proceso no graba video y las URLs RTSP se
 muestran con las credenciales ocultas en los logs.
@@ -20,7 +20,7 @@ muestran con las credenciales ocultas en los logs.
 | Puerto | Proceso | Uso |
 |---|---|---|
 | 8000 | FastAPI | API, eventos y WebSocket |
-| 8001 | Proveedor de visión | MJPEG anotado y estado |
+| 8101–8199 | Proveedores de visión | Puertos internos asignados automáticamente |
 | 3000 | Vite | Dashboard |
 
 ## Instalación
@@ -38,6 +38,17 @@ La primera ejecución con `yolo11n.pt` puede descargar los pesos del modelo.
 Ultralytics selecciona CPU/GPU automáticamente; se puede forzar CPU con
 `--device cpu`.
 
+## Registro y arranque administrado
+
+FastAPI administra las fuentes registradas en **Cámara**. Cada registro conserva
+tipo, URL sin credenciales, usuario, contraseña cifrada, transporte, perfil
+YOLO y archivo de calibración. El navegador consume rutas `/api/cameras/{id}` y
+ya no conoce ni depende de un puerto de visión fijo.
+
+El backend detecta automáticamente `.venv-vision` en la raíz. Si el entorno se
+encuentra en otro lugar, defina `VISION_PYTHON` con la ruta completa del
+intérprete antes de iniciar FastAPI.
+
 ## Arranque completo
 
 Terminal 1 — backend en modo real:
@@ -48,29 +59,19 @@ $env:START_MODE="live"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Terminal 2 — cámara de laptop:
-
-```powershell
-.\.venv-vision\Scripts\Activate.ps1
-python hardware\local_vision_provider.py `
-  --source webcam `
-  --api http://127.0.0.1:8000 `
-  --activate-live-mode
-```
-
-Terminal 3 — dashboard:
+Terminal 2 — dashboard:
 
 ```powershell
 cd frontend
 npm install
-$env:FP_VISION_TARGET="http://127.0.0.1:8001"
 npm run dev
 ```
 
-Abra `http://localhost:3000`. **Cámara** muestra el video con bounding boxes,
-IDs y zonas; **Planta** muestra el plano 2D como vista principal. Permanecen en
-páginas separadas para conservar legibilidad. El plano permite alternar Zonas,
-Rutas, heatmap de Tránsito y heatmap de Permanencia.
+Abra `http://localhost:3000`. En **Cámara → Agregar cámara** registre una webcam,
+RTSP, HTTP/MJPEG o un proveedor existente. FastAPI inicia un proceso por fuente,
+elige un puerto libre y el videowall muestra todas las cámaras. Cada tarjeta
+permite alternar entre video limpio y anotado. **Planta** conserva el plano 2D
+como vista principal.
 
 ## Teléfono como cámara RTSP
 
@@ -86,15 +87,8 @@ python hardware\local_vision_provider.py `
   --probe-source
 ```
 
-5. Si la prueba responde `first_frame_ok: true`, inicie el proveedor:
-
-```powershell
-python hardware\local_vision_provider.py `
-  --source "rtsp://192.168.1.50:8554/live" `
-  --rtsp-transport tcp `
-  --api http://127.0.0.1:8000 `
-  --activate-live-mode
-```
+5. Si la prueba responde `first_frame_ok: true`, capture IP, puerto, ruta y
+   credenciales en **Cámara → Agregar cámara**, seleccione un perfil y guarde.
 
 No guarde una URL con usuario o contraseña en Git. Escríbala sólo en la línea de
 comandos local. Si TCP entrega demasiada latencia en una red estable, pruebe
@@ -133,14 +127,8 @@ python hardware\local_vision_provider.py `
   --plant-height 5
 ```
 
-Después inicie usando el archivo:
-
-```powershell
-python hardware\local_vision_provider.py `
-  --source "rtsp://192.168.1.50:8554/live" `
-  --calib calib-planta.json `
-  --api http://127.0.0.1:8000
-```
+Después escriba `calib-planta.json` en **Archivo de calibración** al registrar o
+editar esa cámara. El backend lo pasa únicamente al proveedor correspondiente.
 
 El proveedor consulta `/api/zones`. Con una calibración válida proyecta los
 polígonos editados en el dashboard sobre el video. Sin calibración, todavía hay
@@ -149,7 +137,8 @@ interpretarse como metros del piso.
 
 ### Dibujar departamentos sobre una captura
 
-Con el proveedor iniciado usando `--calib`, abra **Cámara → Mapear áreas**:
+Con la cámara registrada y el archivo de calibración cargado, abra
+**Cámara → Mapear áreas**:
 
 1. pulse **Nueva captura** si desea congelar otro instante;
 2. elija *Zona / departamento* o *Línea completa*;
@@ -190,30 +179,29 @@ individual dentro de esa zona.
 |---|---|
 | `/vision/health` | Estado, FPS, tracks, zonas y calibración |
 | `/vision/annotated.mjpg` | Cámara con detecciones y zonas |
+| `/vision/raw.mjpg` | Cámara limpia sin overlays |
 | `/vision/floor.mjpg` | Plano 2D y spaghetti |
 | `/vision/snapshot.jpg` | Último cuadro anotado |
 | `/vision/floor.jpg` | Último cuadro del plano |
 | `POST /vision/map-points` | Cámara ↔ plano mediante la homografía cargada |
 
-Por defecto escucha sólo en `127.0.0.1:8001`. Si Vite se ejecuta en otra
-computadora, inicie con `--stream-host 0.0.0.0` y configure:
-
-```powershell
-$env:FP_VISION_TARGET="http://IP_DE_LA_COMPUTADORA_DE_VISION:8001"
-```
+Los procesos administrados escuchan sólo en `127.0.0.1`; el backend retransmite
+estado, snapshot, proyección y video mediante `/api/cameras/{id}/...`. Así, Vite
+solo necesita acceso a FastAPI.
 
 ## Diagnóstico rápido
 
-- **Se ve video, pero no hay recuadros:** confirme que la terminal indica que
-  cargó `yolo11n.pt`; suba iluminación y pruebe `--confidence 0.25`.
+- **Se ve video, pero no hay recuadros:** revise el modelo y perfil en la tarjeta;
+  suba iluminación y pruebe Equilibrado o Alta precisión.
 - **Hay recuadros, pero no aparecen tracks en el plano:** el dashboard debe estar
   en **En vivo**; use `--activate-live-mode` y revise `/vision/health`.
 - **No aparecen zonas sobre la cámara:** hace falta `--calib` y al menos una zona
   válida en `/api/zones`.
 - **RTSP tarda o se corta:** pruebe primero `--probe-source`, use TCP, acerque el
   teléfono al punto de acceso y reduzca la resolución en la app del teléfono.
-- **El puerto 8001 está ocupado:** use `--stream-port 8011` y arranque Vite con
-  `FP_VISION_TARGET=http://127.0.0.1:8011`.
+- **Un proveedor no inicia:** revise el mensaje de la tarjeta y
+  `runtime/camera-<id>.log`; confirme que `.venv-vision` existe o configure
+  `VISION_PYTHON`.
 - **Varias personas intercambian IDs:** evite cruces totalmente ocluidos, use un
   ángulo más alto y buena iluminación. ByteTrack mejora persistencia, pero una
   sola cámara no garantiza reidentificación después de una oclusión prolongada.

@@ -93,7 +93,7 @@ Daniel/
 - **Python:** 3.10 o superior (Probado en Python 3.12).
 - **Node.js:** v18 o superior (Probado en Node.js v22 y npm 10.9).
 - **Puerto 8000:** Para la API Backend y WebSocket.
-- **Puerto 8001:** Para el video anotado del proveedor de visión.
+- **Puertos 8101–8199:** Proveedores de visión locales asignados automáticamente.
 - **Puerto 3000 o 5173:** Para el Frontend Vite.
 
 ---
@@ -110,14 +110,17 @@ python -m uvicorn app.main:app --reload --port 8000
 - El simulador arrancará en segundo plano emitiendo telemetría en tiempo real.
 - Documentación Swagger disponible en: `http://localhost:8000/docs`
 
-### 2. Iniciar visión (opcional, webcam o RTSP)
-En una segunda terminal, desde la raíz:
+### 2. Preparar visión (opcional, webcam o RTSP)
+Desde la raíz, cree el entorno que el backend detecta automáticamente:
 ```powershell
+py -3.12 -m venv .venv-vision
+.\.venv-vision\Scripts\Activate.ps1
 pip install -r hardware\vision_requirements.txt
-python hardware\local_vision_provider.py --source webcam --api http://127.0.0.1:8000 --activate-live-mode
 ```
-Para usar el teléfono, sustituya `webcam` por su URL RTSP. La guía completa de
-calibración, privacidad y diagnóstico está en [`docs/VISION_YOLO_RTSP.md`](docs/VISION_YOLO_RTSP.md).
+Abra **Cámara → Agregar cámara** y registre una webcam, URL RTSP/HTTP o proveedor
+existente. El backend asigna un proceso y puerto por cámara; la contraseña queda
+cifrada y nunca vuelve al navegador. La guía completa está en
+[`docs/VISION_YOLO_RTSP.md`](docs/VISION_YOLO_RTSP.md).
 
 Con una homografía cargada, abra **Cámara → Mapear áreas** para congelar una
 captura y dibujar manualmente departamentos, estaciones o líneas directamente

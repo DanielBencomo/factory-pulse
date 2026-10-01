@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, RotateCcw, Save, ShieldCheck, Undo2 } from 'lucide-react';
 import { api } from '../services/api';
 import { FloorPlan, Line, PolygonZone, Station, ZoneType } from '../types';
@@ -14,23 +14,11 @@ interface Props {
   stations: Station[];
   onClose: () => void;
   onSaved: () => void | Promise<void>;
+  snapshotUrl: string;
+  mapUrl: string;
 }
 
 type Overlay = { id: string; name: string; color: string; points: Point[]; kind: DrawTarget };
-
-const snapshotBase = import.meta.env.VITE_VISION_SNAPSHOT_URL || '/vision/snapshot.jpg';
-const mapUrl = import.meta.env.VITE_VISION_MAP_URL || '/vision/map-points';
-
-const project = async (points: Point[], direction: 'camera_to_floor' | 'floor_to_camera'): Promise<Point[]> => {
-  const response = await fetch(mapUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ points, direction }),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || 'No se pudo proyectar el polígono');
-  return body.points as Point[];
-};
 
 const slug = (value: string) =>
   value
@@ -40,7 +28,10 @@ const slug = (value: string) =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '') || 'area';
 
-export const CameraMapEditor: React.FC<Props> = ({ floorPlan, zones, lines, stations, onClose, onSaved }) => {
+export const CameraMapEditor: React.FC<Props> = ({
+  floorPlan, zones, lines, stations, onClose, onSaved,
+  snapshotUrl, mapUrl,
+}) => {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [capture, setCapture] = useState(Date.now());
   const [points, setPoints] = useState<Point[]>([]);
@@ -54,6 +45,16 @@ export const CameraMapEditor: React.FC<Props> = ({ floorPlan, zones, lines, stat
   const [privateOnly, setPrivateOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const project = useCallback(async (items: Point[], direction: 'camera_to_floor' | 'floor_to_camera'): Promise<Point[]> => {
+    const response = await fetch(mapUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: items, direction }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || 'No se pudo proyectar el polígono');
+    return body.points as Point[];
+  }, [mapUrl]);
 
   useEffect(() => {
     let active = true;
@@ -77,7 +78,7 @@ export const CameraMapEditor: React.FC<Props> = ({ floorPlan, zones, lines, stat
     };
     load();
     return () => { active = false; };
-  }, [capture, lines, zones]);
+  }, [capture, lines, zones, project]);
 
   const filteredStations = useMemo(
     () => stations.filter((station) => !lineId || station.line_id === lineId),
@@ -170,7 +171,7 @@ export const CameraMapEditor: React.FC<Props> = ({ floorPlan, zones, lines, stat
             onClick={addPoint}
             className="relative bg-[#111820] overflow-hidden cursor-crosshair border border-line select-none"
           >
-            <img src={`${snapshotBase}?capture=${capture}`} alt="Imagen congelada para delimitar áreas" className="w-full block" draggable={false} />
+            <img src={`${snapshotUrl}?capture=${capture}`} alt="Imagen congelada para delimitar áreas" className="w-full block" draggable={false} />
             <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
               {overlays.map((overlay) => (
                 <polygon

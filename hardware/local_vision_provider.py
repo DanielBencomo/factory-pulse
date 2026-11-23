@@ -6,7 +6,7 @@ MJPEG para el dashboard. No realiza reconocimiento facial ni guarda video.
 
 Ejemplos::
 
-    python local_vision_provider.py --source webcam --activate-live-mode
+    python local_vision_provider.py --source webcam
     python local_vision_provider.py --source 1
     python local_vision_provider.py --source rtsp://192.168.1.50:8554/live
     python local_vision_provider.py --source video.mp4
@@ -37,13 +37,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
+from importlib.metadata import version as package_version
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 from urllib.parse import urlsplit, urlunsplit
 
 try:
     import requests
-except ImportError:  # permite consultar --help y ejecutar pruebas de helpers sin instalar visión
+except ImportError:  # permite consultar --help sin instalar visión
     requests = None  # type: ignore[assignment]
 
 
@@ -67,7 +68,9 @@ def parse_source(value: str) -> int | str:
         return 0
     if value.isdecimal():
         return int(value)
-    return value
+    if is_network_source(value):
+        return value
+    raise ValueError("La fuente debe ser una webcam, un índice o una URL HTTP/RTSP en vivo")
 
 
 def is_network_source(source: int | str) -> bool:
@@ -179,7 +182,6 @@ class VideoSource:
         self.rtsp_transport = rtsp_transport
         self.reconnect_attempts = reconnect_attempts
         self.cap: Any = None
-        self._is_file = isinstance(source, str) and not is_network_source(source)
         self._frame_condition = threading.Condition()
         self._latest_frame: Any = None
         self._frame_sequence = 0
@@ -198,7 +200,7 @@ class VideoSource:
                 return
             except RuntimeError as exc:
                 attempts += 1
-                if self._is_file or (self.reconnect_attempts > 0 and attempts >= self.reconnect_attempts):
+                if self.reconnect_attempts > 0 and attempts >= self.reconnect_attempts:
                     raise
                 delay = min(0.5 * attempts, 3.0)
                 log(f"{exc}; reconexión inicial en {delay:.1f} s")
@@ -227,9 +229,9 @@ class VideoSource:
         cap = cv2.VideoCapture()
         backend = cv2.CAP_FFMPEG if is_network_source(self.source) else cv2.CAP_ANY
         params = []
-        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+        if is_network_source(self.source) and hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
             params.extend((cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5_000))
-        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+        if is_network_source(self.source) and hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
             params.extend((cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3_000))
         try:
             opened = cap.open(self.source, backend, params) if params else cap.open(self.source, backend)
@@ -245,11 +247,13 @@ class VideoSource:
         self.cap = cap
         log(f"fuente abierta: {redact_source(self.source)}")
 
-    def read(self) -> Any | None:
+    def read(self, timeout: float | None = None) -> Any | None:
         # Return only the newest decoded frame; inference never waits behind a FIFO backlog.
         with self._frame_condition:
-            while not self._reader_stop.is_set() and self._frame_sequence <= self._delivered_sequence:
-                self._frame_condition.wait(timeout=1.0)
+            self._frame_condition.wait_for(
+                lambda: self._reader_stop.is_set() or self._frame_sequence > self._delivered_sequence,
+                timeout=timeout,
+            )
             if self._latest_frame is None or self._frame_sequence <= self._delivered_sequence:
                 return None
             self._delivered_sequence = self._frame_sequence
@@ -259,10 +263,7 @@ class VideoSource:
         attempts = 0
         while not self._reader_stop.is_set():
             cap = self.cap
-            if cap is None:
-                self._reader_stop.wait(0.05)
-                continue
-            ok, frame = cap.read()
+            ok, frame = cap.read() if cap is not None else (False, None)
             if ok and frame is not None:
                 attempts = 0
                 latest = self._fit_frame(frame)
@@ -271,11 +272,12 @@ class VideoSource:
                     self._frame_sequence += 1
                     self._frame_condition.notify_all()
                 continue
-            if self._is_file:
-                cap.set(self.cv2.CAP_PROP_POS_FRAMES, 0)
-                continue
-
             attempts += 1
+            if self.reconnect_attempts and attempts >= self.reconnect_attempts:
+                self._reader_stop.set()
+                with self._frame_condition:
+                    self._frame_condition.notify_all()
+                break
             delay = min(0.5 * attempts, 3.0)
             log(f"source interrupted; reconnect attempt {attempts} in {delay:.1f}s")
             self._reader_stop.wait(delay)
@@ -285,6 +287,7 @@ class VideoSource:
                 self.open()
             except RuntimeError as exc:
                 log(str(exc))
+
     def metadata(self) -> dict[str, Any]:
         if self.cap is None:
             return {"opened": False}
@@ -303,12 +306,12 @@ class VideoSource:
         if hasattr(self, "_frame_condition"):
             with self._frame_condition:
                 self._frame_condition.notify_all()
-        if self.cap is not None:
+        reader = self._reader_thread
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=6)
+        if self.cap is not None and (reader is None or not reader.is_alive()):
             self.cap.release()
             self.cap = None
-        reader = getattr(self, "_reader_thread", None)
-        if reader is not None and reader is not threading.current_thread():
-            reader.join(timeout=2)
 
 
 class FloorCalibration:
@@ -518,14 +521,13 @@ class YoloByteTracker:
 class EventPublisher:
     """Publica fuera del hilo de video; una red lenta no congela el tracking."""
 
-    def __init__(self, api_base: str, device_id: str, activate_live_mode: bool = False) -> None:
+    def __init__(self, api_base: str, device_id: str) -> None:
         if requests is None:
             raise RuntimeError(
                 "Falta requests. Instala: pip install -r hardware/vision_requirements.txt"
             )
         self.api_base = api_base.rstrip("/")
         self.device_id = device_id
-        self.activate_live_mode = activate_live_mode
         self.events_url = f"{self.api_base}/api/events/batch"
         self.heartbeat_url = f"{self.api_base}/api/devices/{device_id}/heartbeat"
         self._queue: queue.Queue[tuple[list[dict[str, Any]], list[dict[str, Any]]] | None] = queue.Queue(maxsize=2)
@@ -556,30 +558,6 @@ class EventPublisher:
                 self._queue.put_nowait(measurements)
             except queue.Full:
                 pass
-
-    def _configure_mode(self, session: requests.Session) -> bool:
-        try:
-            response = session.get(f"{self.api_base}/api/system/mode", timeout=2)
-            response.raise_for_status()
-            current = response.json().get("mode")
-            if current == "live":
-                return True
-            if self.activate_live_mode:
-                response = session.put(
-                    f"{self.api_base}/api/system/mode", params={"mode": "live"}, timeout=3
-                )
-                response.raise_for_status()
-                log("backend cambiado a modo EN VIVO")
-                return True
-            else:
-                log(
-                    "el backend está en modo DEMO; cambia a En vivo en el dashboard "
-                    "o agrega --activate-live-mode"
-                )
-                return True
-        except requests.RequestException as exc:
-            log(f"backend todavía no disponible: {exc}")
-            return False
 
     def _post_heartbeat(self, session: requests.Session) -> None:
         response = session.post(
@@ -650,13 +628,11 @@ class EventPublisher:
         response = session.post(self.events_url, json=batch, timeout=3)
         response.raise_for_status()
 
-    def _post_positions(self, session: requests.Session, positions: list[dict[str, Any]]) -> None:
-        """Compatibilidad con integraciones 0.4 y pruebas externas."""
-        self._post_measurements(session, positions, [])
-
     def _run(self) -> None:
-        session = requests.Session()
-        mode_configured = self._configure_mode(session)
+        with requests.Session() as session:
+            self._publish_loop(session)
+
+    def _publish_loop(self, session: requests.Session) -> None:
         next_heartbeat = 0.0
         while not self._stop.is_set():
             now = time.monotonic()
@@ -665,10 +641,9 @@ class EventPublisher:
                     self._post_heartbeat(session)
                     self.last_ok_at = time.time()
                     next_heartbeat = now + 10.0
-                    # Si el proveedor arrancó antes que FastAPI, el primer intento
-                    # de cambiar a En vivo falló. Se reintenta tras el primer latido.
-                    if not mode_configured:
-                        mode_configured = self._configure_mode(session)
+                    if self.last_error:
+                        log("conexión con el backend recuperada")
+                    self.last_error = ""
                 try:
                     measurements = self._queue.get(timeout=0.25)
                 except queue.Empty:
@@ -1020,7 +995,7 @@ class VisionRenderer:
 
 
 class FrameHub:
-    def __init__(self, jpeg_quality: int, source: str, model: str) -> None:
+    def __init__(self, jpeg_quality: int, source: str, model: str, tracker_config: str) -> None:
         import cv2
 
         self.cv2 = cv2
@@ -1037,6 +1012,8 @@ class FrameHub:
             "version": VERSION,
             "source": source,
             "model": model,
+            "tracker": tracker_config,
+            "ultralytics_version": package_version("ultralytics"),
             "fps": 0.0,
             "tracks": 0,
             "zones": 0,
@@ -1262,37 +1239,12 @@ def calibrate_source(
         cv2.destroyAllWindows()
 
 
-def synthetic_scene(step: int, width: int, height: int, prefix: str) -> tuple[Any, list[PersonDetection]]:
-    """Fuente sin cámara para validar la integración dashboard/HTTP."""
-    import cv2
-    import numpy as np
-
-    frame = np.full((height, width, 3), (59, 66, 70), dtype="uint8")
-    cv2.putText(frame, "FUENTE SINTETICA · no es video real", (24, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (230, 230, 230), 2)
-    detections = []
-    for index, phase in enumerate((0.0, 2.4), start=1):
-        x = int(width * (0.50 + 0.32 * math.sin(step * 0.025 + phase)))
-        y2 = int(height * (0.60 + 0.18 * math.cos(step * 0.019 + phase)))
-        box_w, box_h = 90, 210
-        detections.append(
-            PersonDetection(
-                track_id=f"{prefix}-P{index}",
-                track_number=index,
-                box=(x - box_w // 2, y2 - box_h, x + box_w // 2, y2),
-                confidence=0.99,
-                foot_x=float(x),
-                foot_y=float(y2),
-            )
-        )
-    return frame, detections
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Factory Pulse · YOLO + ByteTrack + webcam/MP4/RTSP",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--api", default="http://localhost:8000", help="backend Factory Pulse")
+    parser.add_argument("--api", default=os.getenv("VISION_BACKEND_URL", "http://127.0.0.1:8000"), help="backend Factory Pulse")
     parser.add_argument("--device-id", default="cam-overhead-1", help="ID anónimo de la cámara")
     parser.add_argument("--source", default=os.getenv("FP_CAMERA_SOURCE", "webcam"), help="webcam | índice | MP4 | HTTP | RTSP")
     parser.add_argument("--profile", choices=tuple(DETECTION_PROFILES), default="balanced", help="perfil base de detección")
@@ -1321,11 +1273,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream-host", default="127.0.0.1")
     parser.add_argument("--stream-port", type=int, default=8001)
     parser.add_argument("--jpeg-quality", type=int, default=82)
-    parser.add_argument(
-        "--activate-live-mode",
-        action="store_true",
-        help="cambia el backend de Demo a En vivo al iniciar",
-    )
     return parser
 
 
@@ -1357,26 +1304,22 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 130
         return 0
 
-    synthetic = args.source.lower() == "synthetic"
-    video: VideoSource | None = None
-    if not synthetic:
-        video = VideoSource(
-            parse_source(args.source),
-            args.width,
-            args.height,
-            args.rtsp_transport,
-            1 if args.probe_source else args.reconnect_attempts,
-        )
-        if args.probe_source:
-            frame = video.read()
+    video = VideoSource(
+        parse_source(args.source),
+        args.width,
+        args.height,
+        args.rtsp_transport,
+        1 if args.probe_source else args.reconnect_attempts,
+    )
+    if args.probe_source:
+        try:
+            frame = video.read(timeout=5)
             info = video.metadata()
             info["first_frame_ok"] = frame is not None
             print(json.dumps(info, indent=2, ensure_ascii=False))
-            video.close()
             return 0 if frame is not None else 2
-    elif args.probe_source:
-        print(json.dumps({"opened": True, "source": "synthetic", "first_frame_ok": True}, indent=2))
-        return 0
+        finally:
+            video.close()
 
     calibration = FloorCalibration(args.calib)
     if not calibration.calibrated:
@@ -1389,7 +1332,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     zone_client = ZoneClient(args.api, args.zone_refresh)
     zones = zone_client.refresh_if_due(force=True)
     prefix = "".join(char if char.isalnum() else "-" for char in args.device_id).strip("-") or "CAM"
-    tracker = None if synthetic else YoloByteTracker(
+    tracker = YoloByteTracker(
         args.model,
         args.tracker,
         args.confidence,
@@ -1404,9 +1347,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         args.min_step,
         camera_trails=args.show_camera_trails,
     )
-    publisher = EventPublisher(args.api, args.device_id, args.activate_live_mode)
+    publisher = EventPublisher(args.api, args.device_id)
     publisher.start()
-    hub = FrameHub(args.jpeg_quality, redact_source(parse_source(args.source)), args.model)
+    hub = FrameHub(args.jpeg_quality, redact_source(parse_source(args.source)), args.model, args.tracker)
     stream_server: VisionHTTPServer | None = None
     if not args.no_stream:
         stream_server = VisionHTTPServer(args.stream_host, args.stream_port, hub, calibration)
@@ -1418,23 +1361,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     previous_frame_at = started
     smoothed_fps = 0.0
     last_publish_at = 0.0
-    step = 0
     log("privacidad: IDs temporales; sin reconocimiento facial; el video no se almacena")
     if not args.no_display:
         log("se abren dos ventanas independientes: Cámara y Plano 2D")
     try:
         while True:
             frame_started = time.monotonic()
-            step += 1
-            if synthetic:
-                frame, detections = synthetic_scene(step, args.width, args.height, prefix)
-            else:
-                assert video is not None and tracker is not None
-                frame = video.read()
-                if frame is None:
-                    log("la fuente dejó de entregar cuadros")
-                    return 2
-                detections = tracker.detect(frame)
+            frame = video.read()
+            if frame is None:
+                log("la fuente dejó de entregar cuadros")
+                return 2
+            detections = tracker.detect(frame)
 
             zones = zone_client.refresh_if_due()
             renderer.locate(detections, frame.shape, zones)
@@ -1498,8 +1435,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     except KeyboardInterrupt:
         log("detenido por el usuario")
     finally:
-        if video:
-            video.close()
+        video.close()
         publisher.close()
         if stream_server:
             stream_server.close()

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Cctv, ExternalLink, MapPinned, RefreshCw, ScanLine, Video, WifiOff } from 'lucide-react';
-import { CameraConfig, FloorPlan, Line, PolygonZone, Station, SystemMode } from '../types';
+import { CameraConfig, FloorPlan, Line, PolygonZone, Station } from '../types';
 import { CameraMapEditor } from './CameraMapEditor';
 
 type VisionHealth = {
@@ -22,7 +22,6 @@ const openStream = (url?: string | null) => {
 };
 
 interface VisionPanelProps {
-  mode: SystemMode;
   camera?: CameraConfig | null;
   compact?: boolean;
   enableMapping?: boolean;
@@ -34,7 +33,6 @@ interface VisionPanelProps {
 }
 
 export const VisionPanel: React.FC<VisionPanelProps> = ({
-  mode,
   camera = null,
   compact = false,
   enableMapping = false,
@@ -194,7 +192,6 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
 
       <footer className="px-3.5 py-2.5 border-t border-line flex flex-wrap items-center gap-2 text-[11.5px] text-ink-3">
         <span>{health?.calibrated ? `${health.zones ?? 0} zonas proyectadas` : 'Calibración de piso pendiente'}</span>
-        {mode !== 'live' && online && <span className="text-warn">El dashboard está en Demo; cambia a En vivo para recibir tracks.</span>}
         {online && health?.backend_ok === false && <span className="text-bad">La cámara funciona, pero no alcanza el backend.</span>}
         <div className="ml-auto flex flex-wrap gap-1.5">
           {camera?.configured && (

@@ -5,7 +5,6 @@ from sqlalchemy import text
 
 from app.database import get_db
 from app.mqtt.adapter import mqtt_adapter
-from app.simulator.engine import simulator
 from app.ws.manager import ws_manager
 
 router = APIRouter()
@@ -26,12 +25,6 @@ async def get_health(session: AsyncSession = Depends(get_db)):
         "mqtt": {
             "enabled": mqtt_adapter.is_connected,
             "status": "connected" if mqtt_adapter.is_connected else "standby_or_disabled"
-        },
-        "simulator": {
-            "is_running": simulator.is_running,
-            "scene": simulator.current_scene,
-            "speed": simulator.speed,
-            "mode": simulator.mode
         },
         "websocket_clients_connected": len(ws_manager.active_connections)
     }

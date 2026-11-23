@@ -6,8 +6,6 @@ from pydantic import BaseModel, Field
 # --- ENUMS ---
 
 class EventMode(str, Enum):
-    DEMO = "demo"
-    REPLAY = "replay"
     LIVE = "live"
 
 class EventType(str, Enum):
@@ -52,7 +50,6 @@ class IntervalClassification(str, Enum):
 
 class ModuleAvailability(str, Enum):
     ACTIVE = "active"
-    SIMULATED = "simulated"
     NEEDS_DEVICE = "needs_device"
     EXPERIMENTAL = "experimental"
 

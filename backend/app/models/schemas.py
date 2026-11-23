@@ -343,7 +343,6 @@ class CatalogModule(BaseModel):
     relative_cost: str # 'Bajo' | 'Medio' | 'Alto' | 'N/A'
     expected_resolution: str
     deployment_requirements: str
-    is_active_in_demo: bool = True
     toggle_enabled: bool = True
 
 # --- AUDIT LOG ---

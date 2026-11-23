@@ -17,7 +17,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Por pieza unitaria (ms)",
         deployment_requirements="ESP32 con entrada optoacoplada a PLC o sensor fotoeléctrico.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -31,7 +30,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Por turno / línea",
         deployment_requirements="Backend Factory Pulse + base de datos SQLite.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -45,7 +43,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Tiempo real (< 1s)",
         deployment_requirements="Pantalla de planta o interfaz web en estación.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
 
@@ -61,7 +58,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Medio",
         expected_resolution="0.2 - 0.5 metros (con cámara cenital)",
         deployment_requirements="Cámara web o celular fijo con servicio local de visión OpenCV.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -75,7 +71,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Rejilla de 1x1 metro",
         deployment_requirements="Backend Factory Pulse + ECharts.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -89,7 +84,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Conteo de personas por zona",
         deployment_requirements="Delimitación de polígono en editor de plano.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
 
@@ -105,7 +99,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Medio",
         expected_resolution="Punto de paso fijo",
         deployment_requirements="Lector RFID RC522 o UHF conectado a ESP32.",
-        is_active_in_demo=False,
         toggle_enabled=False
     ),
     CatalogModule(
@@ -119,7 +112,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Alto",
         expected_resolution="10 - 20 cm",
         deployment_requirements="Mínimo 4 anclas DWM1000/ESP32 en techo de nave.",
-        is_active_in_demo=False,
         toggle_enabled=False
     ),
 
@@ -135,7 +127,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Precisión al segundo",
         deployment_requirements="Módulo web de paros integrado en SQLite.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -143,13 +134,12 @@ MODULES_CATALOG: List[CatalogModule] = [
         category="4. Paros y Operación",
         name="Detección Automática de Microparos",
         description="Propone microparos no justificados (10 a 60 segundos) detectados por falta de ciclo para revisión del supervisor.",
-        availability=ModuleAvailability.SIMULATED,
+        availability=ModuleAvailability.EXPERIMENTAL,
         data_requirements=["machine_state", "cycle", "presencia"],
         signal_type="Inferencia de reglas de cadencia",
         relative_cost="Bajo",
         expected_resolution="Intervalos de 10s - 60s",
         deployment_requirements="Motor de reglas Factory Pulse.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
 
@@ -165,7 +155,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Muestreo cada 5-30s",
         deployment_requirements="ESP32 con sensor DHT22 / BME280 / MQ-135.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -179,7 +168,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Inmediata (< 100ms)",
         deployment_requirements="Pulsador tipo hongo conectado a GPIO de ESP32 con resistencia pull-up.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
 
@@ -195,7 +183,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Timeout de 30 segundos",
         deployment_requirements="Firmware ESP32 con función de heartbeat continuo.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -209,7 +196,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Medio",
         expected_resolution="100 Hz muestreo",
         deployment_requirements="ESP32 con ADC dedicado y sensor SCT-013.",
-        is_active_in_demo=False,
         toggle_enabled=False
     ),
 
@@ -225,7 +211,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Tiempo real",
         deployment_requirements="Motor de reglas Factory Pulse.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -239,7 +224,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Medio (consumo API)",
         expected_resolution="Bajo demanda",
         deployment_requirements="Punto de extensión a API LLM (Claude/GPT/Ollama local).",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
 
@@ -255,7 +239,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo ($4 - $6 USD por ESP32)",
         expected_resolution="Latencia < 50ms en red local",
         deployment_requirements="Cualquier placa ESP32 con conexión a la red de planta.",
-        is_active_in_demo=True,
         toggle_enabled=True
     ),
     CatalogModule(
@@ -269,7 +252,6 @@ MODULES_CATALOG: List[CatalogModule] = [
         relative_cost="Bajo",
         expected_resolution="Detección binaria de movimiento (no XY)",
         deployment_requirements="Firmware ESP-IDF con captura CSI.",
-        is_active_in_demo=False,
         toggle_enabled=False
     )
 ]

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Copy, Check, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
-import { ConnectInfo, Device, RFIDConfig, Station, SystemMode } from '../types';
+import { ConnectInfo, Device, RFIDConfig, Station } from '../types';
 import { api } from '../services/api';
 import { DEVICE_STATUS } from '../components/StationDetail';
 import { Panel } from '../components/DashboardGrid';
@@ -55,25 +55,14 @@ const firmwareConfig = (d: Device, info: ConnectInfo | null) => `// Factory Puls
 #define STATION_ID   "${d.station_id ?? ''}"
 #define RFID_API_KEY ""
 // Latido cada ${info?.heartbeat_interval_seconds ?? 10} s:  POST SERVER_BASE/api/devices/DEVICE_ID/heartbeat
-// Eventos:              POST SERVER_BASE/api/events  (mode: "live")
+// Eventos:              POST SERVER_BASE/api/events
 // RFID UID/EPC:         POST SERVER_BASE/api/rfid/events`;
-
-const curlTest = (d: Device, info: ConnectInfo | null) =>
-  `curl -X POST ${info?.base_url ?? 'http://IP_DEL_SERVIDOR:8000'}/api/devices/${d.device_id}/heartbeat -H "Content-Type: application/json" -d "{\\"firmware\\":\\"prueba\\"}"`;
-
-const rfidCurl = (info: ConnectInfo | null, config: RFIDConfig | null) => {
-  const url = info?.rfid_events_url ?? 'http://IP_DEL_SERVIDOR:8000/api/rfid/events';
-  const auth = config?.auth_required ? ` -H "${config.auth_header}: TU_CLAVE"` : '';
-  return `curl -X POST ${url} -H "Content-Type: application/json"${auth} -d '{"event_id":"portal-001-0001","reader_id":"portal-001","tag_id":"E2000017221101441890ABCD","event":"enter","zone_id":"zone-storage","antenna_id":"A1","rssi":-48.5}'`;
-};
 
 export const DevicesPage: React.FC<{
   devices: Device[];
   stations: Station[];
-  mode: SystemMode;
-  onModeChange: (m: SystemMode) => void;
   onChanged: () => void;
-}> = ({ devices, stations, mode, onModeChange, onChanged }) => {
+}> = ({ devices, stations, onChanged }) => {
   const [info, setInfo] = useState<ConnectInfo | null>(null);
   const [rfid, setRfid] = useState<RFIDConfig | null>(null);
   const [types, setTypes] = useState<{ value: string; label: string }[]>([]);
@@ -81,7 +70,6 @@ export const DevicesPage: React.FC<{
   const [formOpen, setFormOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [showDemo, setShowDemo] = useState(false);
   const [, tick] = useState(0);
 
   useEffect(() => {
@@ -92,11 +80,10 @@ export const DevicesPage: React.FC<{
     api.listDeviceTypes().then((items) => setTypes(items.filter((item) => item.value !== 'camera_vision'))).catch(() => setTypes([]));
     const id = setInterval(() => tick((n) => n + 1), 1000); // refresca los "hace X s"
     return () => clearInterval(id);
-  }, [mode]);
+  }, []);
 
   const real = devices.filter((d) => !d.simulated && d.is_active && d.type !== 'camera_vision');
   const discovered = devices.filter((d) => !d.simulated && !d.is_active && d.type !== 'camera_vision');
-  const demo = devices.filter((d) => d.simulated);
   const connected = real.filter((d) => d.status === 'online').length;
   const typeLabel = (t: string) => types.find((x) => x.value === t)?.label ?? t;
   const stationName = (id?: string) => {
@@ -147,8 +134,6 @@ export const DevicesPage: React.FC<{
         <div className="p-4 flex flex-wrap items-start gap-x-8 gap-y-3">
           <div className="min-w-[240px] flex-1">
             <div className="eyebrow">Estado</div>
-            {mode === 'live' ? (
-              <>
                 <h2 className="text-[17px] font-semibold mt-1">
                   {real.length === 0 ? 'Listo para recibir dispositivos' : connected === real.length ? 'Todos los dispositivos conectados' : 'Esperando conexión'}
                 </h2>
@@ -161,18 +146,6 @@ export const DevicesPage: React.FC<{
                   )}
                   . Sin latido en {info?.device_timeout_seconds ?? 30} s un dispositivo pasa a “sin señal”.
                 </p>
-              </>
-            ) : (
-              <>
-                <h2 className="text-[17px] font-semibold mt-1">Modo demo: el simulador está generando los datos</h2>
-                <p className="text-[12.5px] text-ink-2 mt-1">
-                  Puedes registrar dispositivos desde ahora; quedarán esperando conexión. Al pasar a En vivo se apaga el simulador y solo cuentan los datos reales.
-                </p>
-                <button className="btn btn-primary btn-sm mt-2" onClick={() => onModeChange('live')}>
-                  Pasar a En vivo
-                </button>
-              </>
-            )}
           </div>
 
           <div className="min-w-[280px] flex-[1.3]">
@@ -374,14 +347,6 @@ export const DevicesPage: React.FC<{
                             <div className="eyebrow mb-1">Configuración para el firmware</div>
                             <Code>{firmwareConfig(d, info)}</Code>
                           </div>
-                          <div>
-                            <div className="eyebrow mb-1">Probar sin ESP32 (simula un latido)</div>
-                            <Code>{curlTest(d, info)}</Code>
-                            <p className="text-[11.5px] text-ink-3 mt-1.5 leading-snug">
-                              Si el estado cambia a “conectado”, el servidor es alcanzable. El firmware de referencia está en{' '}
-                              <span className="num">hardware/esp32_firmware.ino</span>.
-                            </p>
-                          </div>
                         </div>
                       </td>
                     </tr>
@@ -410,43 +375,11 @@ export const DevicesPage: React.FC<{
               También recibe <span className="num">antenna_id</span>, <span className="num">rssi</span>, zona, estación y marca de tiempo. Cada <span className="num">event_id</span> es idempotente.
             </p>
           </div>
-          <div>
-            <div className="eyebrow mb-1">Prueba de una lectura</div>
-            <Code>{rfidCurl(info, rfid)}</Code>
-          </div>
         </div>
       </Panel>
 
       <BadgesPanel />
 
-      {/* Demo */}
-      <section className="panel">
-        <button className="w-full panel-head !border-b-0 text-left" onClick={() => setShowDemo((v) => !v)}>
-          <span className="flex items-center gap-2">
-            {showDemo ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-            <span className="panel-title">Nodos de demostración</span>
-            <span className="text-[11.5px] text-ink-3">{demo.length} simulados · no representan hardware real</span>
-          </span>
-        </button>
-        {showDemo && (
-          <div className="px-3.5 pb-3.5">
-            <table className="w-full text-[12.5px]">
-              <tbody>
-                {demo.map((d) => (
-                  <tr key={d.device_id} className="border-t border-line">
-                    <td className="py-1.5 pr-2">
-                      <span className={`chip ${DEVICE_STATUS[d.status].chip}`}>{DEVICE_STATUS[d.status].label}</span>
-                    </td>
-                    <td className="py-1.5 pr-2">{d.name}</td>
-                    <td className="py-1.5 pr-2 num text-[11px] text-ink-3">{d.device_id}</td>
-                    <td className="py-1.5 text-right num text-[11.5px] text-ink-3">{ago(d.last_heartbeat)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
     </div>
   );
 };

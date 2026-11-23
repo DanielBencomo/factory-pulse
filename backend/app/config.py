@@ -1,6 +1,8 @@
-import os
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
+
+ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Factory Pulse"
@@ -8,7 +10,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api"
     
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./factory_pulse.db")
+    DATABASE_URL: str = "sqlite+aiosqlite:///./factory_pulse.db"
     
     # CORS
     CORS_ORIGINS: List[str] = [
@@ -16,36 +18,30 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
-        "*"
     ]
     
     # MQTT Configuration (Optional / Configurable)
-    MQTT_ENABLED: bool = os.getenv("MQTT_ENABLED", "false").lower() == "true"
-    MQTT_BROKER_HOST: str = os.getenv("MQTT_BROKER_HOST", "localhost")
-    MQTT_BROKER_PORT: int = int(os.getenv("MQTT_BROKER_PORT", "1883"))
-    MQTT_USERNAME: str = os.getenv("MQTT_USERNAME", "")
-    MQTT_PASSWORD: str = os.getenv("MQTT_PASSWORD", "")
-    MQTT_TOPIC_PREFIX: str = os.getenv("MQTT_TOPIC_PREFIX", "factory_pulse")
+    MQTT_ENABLED: bool = False
+    MQTT_BROKER_HOST: str = "localhost"
+    MQTT_BROKER_PORT: int = 1883
+    MQTT_USERNAME: str = ""
+    MQTT_PASSWORD: str = ""
+    MQTT_TOPIC_PREFIX: str = "factory_pulse"
     
-    # Seed & Simulation
-    SEED_ON_STARTUP: bool = True
-    SIMULATOR_SPEED: float = 1.0
-    # "demo": arranca el simulador. "live": no simula nada y espera a los ESP32.
-    START_MODE: str = os.getenv("START_MODE", "demo")
     # Segundos sin latido para considerar un dispositivo sin señal.
-    DEVICE_TIMEOUT_SECONDS: int = int(os.getenv("DEVICE_TIMEOUT_SECONDS", "30"))
+    DEVICE_TIMEOUT_SECONDS: int = 30
     # Si se define, los lectores RFID deben enviarlo en X-Factory-Pulse-Key.
-    RFID_INGEST_TOKEN: str = os.getenv("RFID_INGEST_TOKEN", "")
+    RFID_INGEST_TOKEN: str = ""
 
     # Cámaras. El frontend nunca depende de un puerto fijo: el backend asigna
     # uno por proveedor local y publica todos los flujos bajo /api/cameras.
-    VISION_PYTHON: str = os.getenv("VISION_PYTHON", "")
-    VISION_BACKEND_URL: str = os.getenv("VISION_BACKEND_URL", "http://127.0.0.1:8000")
-    VISION_PORT_START: int = int(os.getenv("VISION_PORT_START", "8101"))
-    VISION_PORT_END: int = int(os.getenv("VISION_PORT_END", "8199"))
-    CAMERA_SECRET_KEY: str = os.getenv("CAMERA_SECRET_KEY", "")
-    CAMERA_KEY_FILE: str = os.getenv("CAMERA_KEY_FILE", ".factory_pulse_camera.key")
+    VISION_PYTHON: str = ""
+    VISION_BACKEND_URL: str = "http://127.0.0.1:8000"
+    VISION_PORT_START: int = 8101
+    VISION_PORT_END: int = 8199
+    CAMERA_SECRET_KEY: str = ""
+    CAMERA_KEY_FILE: str = ".factory_pulse_camera.key"
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="allow")
+    model_config = SettingsConfigDict(env_file=ROOT / ".env", case_sensitive=True, extra="ignore")
 
 settings = Settings()

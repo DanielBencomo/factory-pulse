@@ -17,7 +17,7 @@ async def export_events_csv(
     session: AsyncSession = Depends(get_db)
 ):
     since = datetime.utcnow() - timedelta(hours=hours)
-    stmt = select(DBEvent).where(DBEvent.occurred_at >= since).order_by(desc(DBEvent.occurred_at))
+    stmt = select(DBEvent).where(DBEvent.occurred_at >= since, DBEvent.mode == "live").order_by(desc(DBEvent.occurred_at))
     res = await session.execute(stmt)
     events = res.scalars().all()
 

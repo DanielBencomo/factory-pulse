@@ -27,8 +27,8 @@ Trabaja paso a paso y no des por terminado el despliegue hasta hacer las verific
 
 1. Verifica requisitos:
    - Git;
-   - Python 3.10–3.12 (preferido 3.12);
-   - Node.js 18 o superior y npm;
+   - Python 3.12;
+   - Node.js 22.12 o superior y npm;
    - puertos 8000 y 3000 libres;
    - al menos un puerto libre dentro de 8101–8199 por cámara activa.
 
@@ -48,11 +48,11 @@ Trabaja paso a paso y no des por terminado el despliegue hasta hacer las verific
    pytest -q
    cd ..
 
-4. Inicia el backend en una terminal PowerShell nueva, en modo real:
+4. Inicia el backend en una terminal PowerShell nueva:
    cd <RUTA_AL_REPOSITORIO>
    .\.venv-backend\Scripts\Activate.ps1
    cd backend
-   $env:START_MODE="live"
+
    python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 5. Comprueba antes de seguir:

@@ -82,6 +82,8 @@ class MQTTAdapter:
             effect = None
 
             async with AsyncSessionLocal() as session:
+                if data.get("mode", "live") != "live":
+                    return
                 ev = DBEvent(
                     event_id=event_id,
                     device_id=data.get("device_id", "mqtt-device"),
@@ -91,7 +93,7 @@ class MQTTAdapter:
                     type=data.get("type", "presence"),
                     payload=data.get("payload", {}),
                     quality=float(data.get("quality", 1.0)),
-                    mode=data.get("mode", "live")
+                    mode="live"
                 )
                 session.add(ev)
                 if ev.mode == "live" and ev.device_id:

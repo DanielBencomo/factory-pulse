@@ -55,3 +55,8 @@ frontend/node_modules/
 Thumbs.db
 .vscode/
 .idea/
+
+# Entornos separados de Factory Pulse
+.venv-backend/
+.venv-vision/
+*.pt

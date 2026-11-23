@@ -12,7 +12,6 @@ from sqlalchemy import select, func
 
 from app.database import get_db
 from app.models.db_models import DBEvent, DBFloorPlan
-from app.simulator.engine import simulator
 
 router = APIRouter()
 
@@ -26,7 +25,7 @@ async def track_history(
     max_points: int = Query(1500, ge=50, le=5000),
     session: AsyncSession = Depends(get_db),
 ) -> Dict[str, List[List[float]]]:
-    mode = simulator.mode  # no mezclar trayectorias simuladas con las reales
+    mode = "live"
     latest = (await session.execute(select(func.max(DBEvent.occurred_at)).where(DBEvent.type == "position", DBEvent.mode == mode))).scalar()
     if latest is None:
         return {}

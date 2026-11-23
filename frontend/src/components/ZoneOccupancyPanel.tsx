@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, ShieldCheck, Users } from 'lucide-react';
 import { api } from '../services/api';
-import { OccupancySnapshot, SystemMode } from '../types';
+import { OccupancySnapshot } from '../types';
 
-export const ZoneOccupancyPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => {
+export const ZoneOccupancyPanel: React.FC = () => {
   const [snapshot, setSnapshot] = useState<OccupancySnapshot | null>(null);
   const [error, setError] = useState(false);
 
@@ -15,7 +15,7 @@ export const ZoneOccupancyPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => 
     refresh();
     const timer = window.setInterval(refresh, 2_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [mode]);
+  }, []);
 
   const at = snapshot?.at ? Date.parse(snapshot.at.endsWith('Z') ? snapshot.at : `${snapshot.at}Z`) : NaN;
   const fresh = Number.isFinite(at) && Date.now() - at < 20_000;
@@ -31,7 +31,7 @@ export const ZoneOccupancyPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => 
         <div className="flex items-center gap-1.5">
           <span className={`chip ${fresh && !error ? 'chip-ok' : 'chip-muted'}`}>
             <span className={`dot ${fresh && !error ? 'bg-ok' : 'bg-ink-4'}`} />
-            {error ? 'Sin backend' : mode === 'live' ? 'En vivo' : mode === 'replay' ? 'Reproducción' : 'Demo'}
+            {error ? 'Sin backend' : 'En vivo'}
           </span>
           <span className="chip chip-brand num">{total} en planta</span>
         </div>
@@ -40,7 +40,7 @@ export const ZoneOccupancyPanel: React.FC<{ mode: SystemMode }> = ({ mode }) => 
         <div className="p-5 text-[12.5px] text-ink-3">{error ? 'No se pudo consultar la ocupación.' : 'Leyendo ocupación…'}</div>
       ) : (
         <div className="p-3.5">
-          {mode === 'live' && snapshot.zones.every((zone) => zone.count === 0) && (
+          {snapshot.zones.every((zone) => zone.count === 0) && (
             <p className="text-[11.5px] text-ink-3 mb-2">Sin señal agregada reciente; los conteos aparecerán al publicar la cámara.</p>
           )}
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">

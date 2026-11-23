@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { ArrowLeft, ChevronLeft, ChevronRight, PencilRuler, SlidersHorizontal } from 'lucide-react';
-import { Device, FloorPlan, Line, PolygonZone, SpatialLayer, Station, StationMetric, Stop, SystemMode, TrackPoint } from '../types';
+import { Device, FloorPlan, Line, PolygonZone, SpatialLayer, Station, StationMetric, Stop, TrackPoint } from '../types';
 import { Popover } from './Popover';
 import { interiorOf } from '../layout/interior';
 import { C, FONT_MONO, FONT_SANS, ZONE_TINT, statusOf, trackColor } from '../theme';
@@ -19,7 +19,7 @@ import {
   stationTransitions,
   shortStationName,
 } from '../layout/geometry';
-import { Track, ZoneLogEntry, deriveCsi, StationDrawing, ZoneReadout } from './StationDetail';
+import { Track, ZoneLogEntry, StationDrawing, ZoneReadout } from './StationDetail';
 
 interface FloorPlan2DProps {
   floorPlan: FloorPlan | null;
@@ -32,7 +32,6 @@ interface FloorPlan2DProps {
   /** Marca de tiempo (ms) del último tick recibido; si falta se usa el reloj local. */
   tickTime?: number;
   devices?: Device[];
-  mode?: SystemMode;
   /** Pide al plano que abra una línea (p. ej. al cambiarla en el encabezado). */
   focusLineId?: string | null;
   /** Abre una zona desde una observación explicable del panel lateral. */
@@ -66,7 +65,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
   tracks,
   tickTime,
   devices = [],
-  mode = 'demo',
   focusLineId,
   focusZoneId,
   requestedLayer,
@@ -96,16 +94,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
     api.getTrackHistory(HISTORY_MINUTES).then((h) => setHistory((prev) => ({ ...h, ...mergeLive(prev, h) })));
   }, []);
 
-  // Al cambiar entre demo y en vivo no se mezclan trayectorias: se recarga el historial del modo nuevo.
-  const lastMode = useRef(mode);
-  useEffect(() => {
-    if (lastMode.current === mode) return;
-    lastMode.current = mode;
-    setHistory({});
-    setZoneLog([]);
-    membership.current = {};
-    api.getTrackHistory(HISTORY_MINUTES).then((h) => setHistory((prev) => ({ ...h, ...mergeLive(prev, h) })));
-  }, [mode]);
 
   // Si cambian las medidas de la nave, el historial viejo queda en otro marco de coordenadas.
   const dimsKey = floorPlan ? `${floorPlan.width_meters}x${floorPlan.height_meters}` : null;
@@ -345,7 +333,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
 
   const insideScope = scopeZone ? Object.keys(tracks).filter((id) => pointInPolygon(tracks[id].x, tracks[id].y, scopeZone.polygon)) : [];
   const scopeStation = scopeZone ? stationOfZone(scopeZone, stations) : undefined;
-  const scopeCsi = deriveCsi(insideScope, history, mPerX, mPerY).state;
   const scopeItems = useMemo(
     () => (scopeZone ? interiorOf(scopeZone, scopeStation, mPerX, mPerY) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -620,7 +607,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                   zone={scopeZone}
                   items={scopeItems}
                   status={scopeStation ? statusFor(scopeStation) : undefined}
-                  csi={scopeCsi}
                   planH={planH}
                   unit={unit}
                   devices={devices}
@@ -745,10 +731,8 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 stationMetric={metricFor(scopeStation)}
                 items={scopeItems}
                 devices={devices}
-                mode={mode}
                 insideIds={insideScope}
                 tracks={tracks}
-                histories={history}
                 log={zoneLog}
                 stops={stops}
                 mPerX={mPerX}

@@ -2,7 +2,7 @@ import {
   FloorPlan, PolygonZone, Station, Device, Stop, StopReason,
   Alert, AlertRuleConfig, MetricsSummary, DashboardConfig,
   CatalogModule, ScaleCalibration, Layout, Line, TrackPoint,
-  Analytics, ConnectInfo, SystemMode, InteriorItem, Badge, Recording, Playback, ZoneSignals,
+  Analytics, ConnectInfo, InteriorItem, Badge, ZoneSignals,
   OccupancySnapshot, RFIDConfig, ZoneType, SpatialSummary, CameraConfig, CameraInput, CameraProfile
 } from '../types';
 
@@ -159,25 +159,11 @@ export const api = {
     scope: 'plant' | 'line' | 'station' | 'zone' = 'plant',
     scopeId?: string | null,
     minutes: number = 60,
-    mode?: SystemMode,
   ): Promise<SpatialSummary> {
     const params = new URLSearchParams({ scope, minutes: String(minutes) });
     if (scopeId) params.set('scope_id', scopeId);
-    if (mode) params.set('mode', mode);
     const res = await fetch(`${API_BASE}/spatial/summary?${params}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(await errorText(res, 'No se pudo calcular la analítica espacial'));
-    return res.json();
-  },
-
-  // Modo del sistema y conexión de dispositivos
-  async getSystemMode(): Promise<{ mode: SystemMode; simulator_running: boolean; playback?: Playback }> {
-    const res = await fetch(`${API_BASE}/system/mode`);
-    return res.json();
-  },
-
-  async setSystemMode(mode: SystemMode): Promise<{ mode: SystemMode; simulator_running: boolean; playback?: Playback }> {
-    const res = await fetch(`${API_BASE}/system/mode?mode=${mode}`, { method: 'PUT' });
-    if (!res.ok) throw new Error(await errorText(res, 'No se pudo cambiar el modo'));
     return res.json();
   },
 
@@ -344,33 +330,6 @@ export const api = {
     await fetch(`${API_BASE}/badges/${encodeURIComponent(tagId)}`, { method: 'DELETE' });
   },
 
-  // Grabaciones (plan B)
-  async listRecordings(): Promise<{ recordings: Recording[]; playback: Playback }> {
-    const res = await fetch(`${API_BASE}/recordings`);
-    return res.json();
-  },
-
-  async saveRecording(name: string, minutes: number): Promise<Recording> {
-    const res = await fetch(`${API_BASE}/recordings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, minutes }),
-    });
-    if (!res.ok) throw new Error(await errorText(res, 'No se pudo guardar la grabación'));
-    return res.json();
-  },
-
-  async playRecording(id: string, speed = 1, loop = true): Promise<Playback> {
-    const res = await fetch(`${API_BASE}/recordings/${id}/play?speed=${speed}&loop=${loop}`, { method: 'POST' });
-    if (!res.ok) throw new Error(await errorText(res, 'No se pudo reproducir'));
-    return res.json();
-  },
-
-  async deleteRecording(id: string) {
-    const res = await fetch(`${API_BASE}/recordings/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error(await errorText(res, 'No se pudo eliminar'));
-  },
-
   async closeStop(stopId: string, endedAt?: string): Promise<Stop> {
     const url = endedAt
       ? `${API_BASE}/stops/${stopId}/close?ended_at=${encodeURIComponent(endedAt)}`
@@ -439,41 +398,6 @@ export const api = {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
-    });
-    return res.json();
-  },
-
-  // Simulator
-  async getSimulatorStatus() {
-    const res = await fetch(`${API_BASE}/simulator/status`);
-    return res.json();
-  },
-
-  async startSimulator(speed: number = 1.0) {
-    const res = await fetch(`${API_BASE}/simulator/start?speed=${speed}`, { method: 'POST' });
-    return res.json();
-  },
-
-  async pauseSimulator() {
-    const res = await fetch(`${API_BASE}/simulator/pause`, { method: 'POST' });
-    return res.json();
-  },
-
-  async resetSimulator(hardReset: boolean = true) {
-    const res = await fetch(`${API_BASE}/simulator/reset?hard_reset_demo_only=${hardReset}`, { method: 'POST' });
-    return res.json();
-  },
-
-  async setSimulatorScene(sceneNumber: number) {
-    const res = await fetch(`${API_BASE}/simulator/scene?scene_number=${sceneNumber}`, { method: 'POST' });
-    return res.json();
-  },
-
-  async injectSimulatorEvent(eventData: Record<string, any>) {
-    const res = await fetch(`${API_BASE}/simulator/inject`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(eventData),
     });
     return res.json();
   },

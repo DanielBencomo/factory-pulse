@@ -64,11 +64,3 @@ puede validarse de forma confiable con una sola imagen.
 - Diseñar fusión espacial y temporal para cámaras con solapamiento.
 - Evaluar segmentación semántica asistida para sugerir polígonos, manteniendo la
   aprobación manual.
-
-## Verificación ejecutada
-
-- Backend: 35 pruebas aprobadas.
-- Proveedor de visión: 13 pruebas aprobadas.
-- Frontend: TypeScript y build de producción aprobados.
-- Prueba integrada sintética: video anotado, mapeo bidireccional, publicación de
-  posiciones, conteo agregado sin IDs y lectura RFID normalizada.

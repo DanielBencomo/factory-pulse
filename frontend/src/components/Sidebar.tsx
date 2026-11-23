@@ -1,5 +1,5 @@
 import React from 'react';
-import { Map, BarChart3, Bell, Cpu, PencilRuler, Play, Ruler, Boxes, Download, History, Video } from 'lucide-react';
+import { Map, BarChart3, Bell, Cpu, PencilRuler, Ruler, Boxes, Download, Video } from 'lucide-react';
 
 export type Page = 'planta' | 'camara' | 'metricas' | 'eventos' | 'dispositivos' | 'layout';
 
@@ -20,9 +20,6 @@ interface SidebarProps {
   devicesOnline: number;
   devicesReal: number;
   devicesPending: number;
-  simulatorAvailable: boolean;
-  onOpenSimulator: () => void;
-  onOpenRecordings: () => void;
   onOpenCalibration: () => void;
   onOpenModules: () => void;
   onOpenExport: () => void;
@@ -70,9 +67,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   devicesOnline,
   devicesReal,
   devicesPending,
-  simulatorAvailable,
-  onOpenSimulator,
-  onOpenRecordings,
   onOpenCalibration,
   onOpenModules,
   onOpenExport,
@@ -112,17 +106,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       <div className="hidden lg:block mt-auto pt-3">
         <div className="eyebrow px-3 pb-1.5 !text-white/55">Herramientas</div>
-        <Item
-          onClick={onOpenSimulator}
-          icon={Play}
-          disabled={!simulatorAvailable}
-          title={simulatorAvailable ? undefined : 'Disponible solo en modo Demo'}
-        >
-          Simulador
-        </Item>
-        <Item onClick={onOpenRecordings} icon={History}>
-          Grabaciones · plan B
-        </Item>
         <Item onClick={onOpenCalibration} icon={Ruler}>
           Calibrar escala
         </Item>

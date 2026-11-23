@@ -1,6 +1,6 @@
 import React from 'react';
 import { OctagonAlert } from 'lucide-react';
-import { Line, Playback, SystemMode } from '../types';
+import { Line } from '../types';
 
 interface HeaderProps {
   title: string;
@@ -9,9 +9,6 @@ interface HeaderProps {
   onLineChange: (id: string) => void;
   windowMinutes: number;
   onWindowChange: (minutes: number) => void;
-  mode: SystemMode;
-  onModeChange: (mode: SystemMode) => void;
-  playback?: Playback | null;
   isWsConnected: boolean;
   openStopsCount: number;
   onDeclareStop: () => void;
@@ -27,9 +24,6 @@ export const Header: React.FC<HeaderProps> = ({
   onLineChange,
   windowMinutes,
   onWindowChange,
-  mode,
-  onModeChange,
-  playback,
   isWsConnected,
   openStopsCount,
   onDeclareStop,
@@ -63,19 +57,7 @@ export const Header: React.FC<HeaderProps> = ({
       )}
 
       <div className="flex items-center gap-2">
-        <div className="seg" role="group" aria-label="Fuente de datos">
-          <button aria-pressed={mode === 'demo'} onClick={() => onModeChange('demo')} title="El simulador genera datos de ejemplo">
-            Demo
-          </button>
-          <button aria-pressed={mode === 'live'} onClick={() => onModeChange('live')} title="Solo datos de dispositivos reales">
-            En vivo
-          </button>
-          {mode === 'replay' && (
-            <button aria-pressed title={playback?.name ? `Reproduciendo “${playback.name}”` : 'Reproduciendo una grabación'}>
-              Reproducción{playback?.active ? ` ${Math.round(playback.progress * 100)}%` : ''}
-            </button>
-          )}
-        </div>
+        <span className="chip chip-info">En vivo</span>
         <span className="flex items-center gap-1.5 text-[11.5px] text-ink-3" title="Conexión con el servidor">
           <span className="dot" style={{ background: isWsConnected ? 'var(--color-ok)' : 'var(--color-bad)' }} />
           <span className="hidden sm:inline">{isWsConnected ? 'Servidor' : 'Sin servidor'}</span>

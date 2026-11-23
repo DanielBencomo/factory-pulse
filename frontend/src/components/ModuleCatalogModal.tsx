@@ -11,7 +11,6 @@ interface ModuleCatalogModalProps {
 
 const AVAIL: Record<ModuleAvailability, { label: string; chip: string }> = {
   active: { label: 'activo', chip: 'chip-ok' },
-  simulated: { label: 'simulado', chip: 'chip-info' },
   needs_device: { label: 'requiere hardware', chip: 'chip-warn' },
   experimental: { label: 'experimental', chip: 'chip-muted' },
 };

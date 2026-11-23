@@ -1,8 +1,5 @@
 """
-Procesador de datos reales (modo "live" y "replay").
-
-En demo, el simulador genera posiciones, estados y alertas. Con dispositivos
-reales nadie hacía ese trabajo; este ciclo lo cubre:
+Procesador de datos reales.
 
   cada 1 s   difunde la última posición de cada track (mapa y spaghetti en vivo)
   cada 5 s   deriva el estado de cada estación, evalúa reglas y busca
@@ -60,19 +57,17 @@ class LiveProcessor:
             self.task.cancel()
 
     async def _loop(self):
-        from app.simulator.engine import simulator  # evita import circular
-
         while True:
             try:
-                if simulator.mode in ("live", "replay"):
-                    await self.tick(simulator.mode)
+                await self.tick()
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # el ciclo nunca debe morir por un dato raro
                 logger.error(f"Error en procesador en vivo: {e}", exc_info=True)
             await asyncio.sleep(1.0)
 
-    async def tick(self, mode: str):
+    async def tick(self):
+        mode = "live"
         self.tick_count += 1
         now = datetime.utcnow()
         full = self.tick_count % 5 == 0
@@ -115,7 +110,7 @@ class LiveProcessor:
             await ws_manager.broadcast({
                 "type": "TRACKS",
                 "mode": mode,
-                "sim_time": now.isoformat(),
+                "observed_at": now.isoformat(),
                 "tracks": {k: {"x": v[1], "y": v[2], "name": k} for k, v in live_tracks.items()},
             })
 

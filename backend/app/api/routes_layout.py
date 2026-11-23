@@ -185,7 +185,7 @@ async def save_layout(payload: LayoutPayload, session: AsyncSession = Depends(ge
         calib["real_distance_meters"] = round(payload.floor_plan.width_meters * 0.9, 2)
         # Las posiciones anteriores están en el marco viejo; no se reescriben (son
         # telemetría cruda), solo se marca desde cuándo aplica el marco nuevo.
-        latest = (await session.execute(select(func.max(DBEvent.occurred_at)).where(DBEvent.type == "position"))).scalar()
+        latest = (await session.execute(select(func.max(DBEvent.occurred_at)).where(DBEvent.type == "position", DBEvent.mode == "live"))).scalar()
         calib["frame_since"] = latest.isoformat() if latest else None
         fp.calibration = calib
     fp.updated_at = datetime.utcnow()

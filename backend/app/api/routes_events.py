@@ -21,11 +21,15 @@ async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(ge
     Ingests a single event with deduplication by event_id.
     Broadcasts new event to all WebSocket clients in real-time.
     """
+    if event_in.mode != EventMode.LIVE:
+        raise HTTPException(status_code=422, detail="Solo se aceptan eventos en vivo")
     # 1. Deduplication check
     stmt = select(DBEvent).where(DBEvent.event_id == event_in.event_id)
     res = await session.execute(stmt)
     existing = res.scalar_one_or_none()
     if existing:
+        if existing.mode != EventMode.LIVE.value:
+            raise HTTPException(status_code=409, detail="El ID pertenece a un registro histórico no operativo")
         # Idempotent response: return existing event without double insertion
         return EventResponse(
             id=existing.id,
@@ -110,6 +114,8 @@ async def ingest_events_batch(events_in: List[EventIngest], session: AsyncSessio
     """
     Batch event ingestion for camera vision or sensor bursts.
     """
+    if any(event.mode != EventMode.LIVE for event in events_in):
+        raise HTTPException(status_code=422, detail="Solo se aceptan eventos en vivo")
     responses = []
     for ev_in in events_in:
         ev_res = await ingest_event(ev_in, session)
@@ -119,7 +125,6 @@ async def ingest_events_batch(events_in: List[EventIngest], session: AsyncSessio
 @router.get("/events", response_model=List[EventResponse])
 async def list_events(
     type: Optional[EventType] = None,
-    mode: Optional[EventMode] = None,
     device_id: Optional[str] = None,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -128,11 +133,9 @@ async def list_events(
     """
     Retrieves events ordered chronologically (most recent first).
     """
-    stmt = select(DBEvent).order_by(desc(DBEvent.occurred_at))
+    stmt = select(DBEvent).where(DBEvent.mode == EventMode.LIVE.value).order_by(desc(DBEvent.occurred_at))
     if type:
         stmt = stmt.where(DBEvent.type == type.value)
-    if mode:
-        stmt = stmt.where(DBEvent.mode == mode.value)
     if device_id:
         stmt = stmt.where(DBEvent.device_id == device_id)
 

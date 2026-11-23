@@ -9,7 +9,6 @@ from sqlalchemy import select
 from app.database import get_db
 from app.models.db_models import DBPolygonZone, DBAuditLog, DBEvent, DBFloorPlan, DBLine, DBStation
 from app.calculations.analytics import point_in_polygon
-from app.simulator.engine import simulator
 from app.ws.manager import ws_manager
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -105,7 +104,7 @@ async def live_zone_occupancy(
         await session.execute(
             select(DBEvent.occurred_at, DBEvent.type, DBEvent.payload, DBEvent.device_id)
             .where(
-                DBEvent.mode == simulator.mode,
+                DBEvent.mode == "live",
                 DBEvent.occurred_at >= since,
                 DBEvent.type.in_(["position", "zone_occupancy"]),
             )
@@ -169,7 +168,7 @@ async def live_zone_occupancy(
     total = aggregate_total if aggregate_available else tracked_total
     assigned = sum(item["count"] for item in result)
     return {
-        "mode": simulator.mode,
+        "mode": "live",
         "at": now.isoformat(),
         "max_age_seconds": max_age_seconds,
         "total_people": total,

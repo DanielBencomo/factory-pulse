@@ -38,6 +38,19 @@ La primera ejecución con `yolo11n.pt` puede descargar los pesos del modelo.
 Ultralytics selecciona CPU/GPU automáticamente; se puede forzar CPU con
 `--device cpu`.
 
+## Modelo y seguimiento
+
+| Perfil | Pesos predeterminados | Confianza | IoU | Tamaño de inferencia |
+|---|---|---:|---:|---:|
+| Rápido | `yolo11n.pt` | 0.28 | 0.55 | 640 |
+| Equilibrado | `yolo11s.pt` | 0.25 | 0.55 | 960 |
+| Precisión | `yolo11m.pt` | 0.20 | 0.60 | 1280 |
+
+El perfil predeterminado es Equilibrado. El tracker es ByteTrack, con
+`bytetrack.yaml` y estado persistente entre cuadros del mismo proceso.
+El endpoint de salud indica los pesos, tracker y versión de Ultralytics
+efectivamente cargados, no sólo el perfil configurado.
+
 ## Registro y arranque administrado
 
 FastAPI administra las fuentes registradas en **Cámara**. Cada registro conserva
@@ -51,21 +64,7 @@ intérprete antes de iniciar FastAPI.
 
 ## Arranque completo
 
-Terminal 1 — backend en modo real:
-
-```powershell
-cd backend
-$env:START_MODE="live"
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Terminal 2 — dashboard:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
+Sigue las instrucciones del [README](../README.md) desde la raíz del repositorio.
 
 Abra `http://localhost:3000`. En **Cámara → Agregar cámara** registre una webcam,
 RTSP, HTTP/MJPEG o un proveedor existente. FastAPI inicia un proceso por fuente,
@@ -106,11 +105,6 @@ También se aceptan:
 # Segunda cámara USB
 python hardware\local_vision_provider.py --source 1
 
-# Archivo de prueba; vuelve a empezar al terminar
-python hardware\local_vision_provider.py --source .\muestras\pasillo.mp4
-
-# Integración sin cámara ni modelo, útil para comprobar los tres servidores
-python hardware\local_vision_provider.py --source synthetic --activate-live-mode
 ```
 
 ## Calibración del piso y zonas
@@ -193,8 +187,8 @@ solo necesita acceso a FastAPI.
 
 - **Se ve video, pero no hay recuadros:** revise el modelo y perfil en la tarjeta;
   suba iluminación y pruebe Equilibrado o Alta precisión.
-- **Hay recuadros, pero no aparecen tracks en el plano:** el dashboard debe estar
-  en **En vivo**; use `--activate-live-mode` y revise `/vision/health`.
+- **Hay recuadros, pero no aparecen tracks en el plano:** revise `backend_ok`
+  en `/api/cameras/<ID>/health` y el puerto de `VISION_BACKEND_URL`.
 - **No aparecen zonas sobre la cámara:** hace falta `--calib` y al menos una zona
   válida en `/api/zones`.
 - **RTSP tarda o se corta:** pruebe primero `--probe-source`, use TCP, acerque el

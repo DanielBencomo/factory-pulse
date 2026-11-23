@@ -12,7 +12,6 @@ from app.database import get_db
 from app.devices.registry import device_status, touch_device
 from app.models.db_models import DBDevice, DBAuditLog, DBCameraConfig
 from app.cameras.manager import camera_manager
-from app.simulator.engine import simulator
 
 router = APIRouter()
 
@@ -73,7 +72,7 @@ def _out(d: DBDevice, now: datetime) -> dict:
 @router.get("/devices")
 async def list_devices(session: AsyncSession = Depends(get_db)):
     now = datetime.utcnow()
-    devices = (await session.execute(select(DBDevice).order_by(DBDevice.created_at))).scalars().all()
+    devices = (await session.execute(select(DBDevice).where(DBDevice.simulated.is_not(True)).order_by(DBDevice.created_at))).scalars().all()
     return [_out(d, now) for d in devices]
 
 
@@ -184,7 +183,7 @@ async def connect_info(request: Request):
     ips = _lan_ips()
     host = ips[0] if ips else "IP_DEL_SERVIDOR"
     return {
-        "mode": simulator.mode,
+        "mode": "live",
         "lan_ips": ips,
         "port": port,
         "base_url": f"http://{host}:{port}",

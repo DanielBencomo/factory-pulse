@@ -1,5 +1,5 @@
 import React from 'react';
-import { Device, EquipmentType, InteriorItem, InteriorKind, PolygonZone, Station, StationMetric, Stop, SystemMode, TrackPoint, ZoneSignals } from '../types';
+import { Device, EquipmentType, InteriorItem, InteriorKind, PolygonZone, Station, StationMetric, Stop, ZoneSignals } from '../types';
 import { api } from '../services/api';
 import { C, FONT_MONO, FONT_SANS, statusOf, trackColor } from '../theme';
 import { PLAN_W, bbox, pointInPolygon } from '../layout/geometry';
@@ -47,37 +47,10 @@ export const EQUIPMENT_OPTIONS: { value: EquipmentType; label: string }[] = (
   ['manual', 'smt', 'reflow', 'aoi', 'pack', 'generic'] as EquipmentType[]
 ).map((value) => ({ value, label: KIND_LABEL[value] }));
 
-// Deriva el estado "CSI" a partir del movimiento de los tracks en la zona.
-// En el demo no hay nodo CSI conectado: esto emula la señal que daría uno.
-export const deriveCsi = (
-  inside: string[],
-  histories: Record<string, TrackPoint[]>,
-  mPerX: number,
-  mPerY: number,
-): { state: CsiState; motion: number } => {
-  if (inside.length === 0) return { state: 'sin_presencia', motion: 0 };
-  let motion = 0;
-  inside.forEach((id) => {
-    const h = (histories[id] ?? []).slice(-6);
-    let d = 0;
-    for (let i = 1; i < h.length; i++) d += Math.hypot((h[i][0] - h[i - 1][0]) * mPerX, (h[i][1] - h[i - 1][1]) * mPerY);
-    motion = Math.max(motion, h.length > 1 ? d / (h.length - 1) : 0);
-  });
-  return { state: motion > 0.12 ? 'actividad' : 'quietud', motion };
-};
-
 const CSI_META: Record<CsiState, { label: string; color: string }> = {
   actividad: { label: 'Actividad', color: C.ok },
   quietud: { label: 'Quietud', color: C.warn },
   sin_presencia: { label: 'Sin presencia', color: C.ink4 },
-};
-
-// Tag RFID ficticio y estable por track (el demo no tiene tarjetas reales).
-export const tagFor = (trackId: string) => {
-  let h = 0;
-  for (const ch of trackId) h = (h * 31 + ch.charCodeAt(0)) & 0xffff;
-  const hex = h.toString(16).toUpperCase().padStart(4, '0');
-  return `04:${hex.slice(0, 2)}:··:${hex.slice(2)}`;
 };
 
 const hhmmss = (t: number) => new Date(t).toLocaleTimeString('es-MX', { hour12: false });
@@ -357,17 +330,16 @@ export const StationDrawing: React.FC<{
   zone: PolygonZone;
   items: InteriorItem[];
   status?: string;
-  csi: CsiState;
   planH: number;
   unit: number;
   devices: Device[];
-}> = ({ zone, items, status, csi, planH, unit, devices }) => {
+}> = ({ zone, items, status, planH, unit, devices }) => {
   const b = bboxOf(zone);
   const devStatus = (id?: string | null) => (id ? devices.find((d) => d.device_id === id)?.status ?? 'none' : undefined);
   return (
     <g transform={`translate(${b.x0 * PLAN_W},${b.y0 * planH}) scale(${unit})`} className="fp-fade" style={{ pointerEvents: 'none' }}>
       {items.map((it) => (
-        <InteriorItemShape key={it.id} item={it} running={status === 'active'} deviceStatus={devStatus(it.device_id)} csi={csi} />
+        <InteriorItemShape key={it.id} item={it} running={status === 'active'} deviceStatus={devStatus(it.device_id)} />
       ))}
     </g>
   );
@@ -420,22 +392,19 @@ export const ZoneReadout: React.FC<{
   stationMetric?: StationMetric;
   items: InteriorItem[];
   devices: Device[];
-  mode: SystemMode;
   insideIds: string[];
   tracks: Record<string, Track>;
-  histories: Record<string, TrackPoint[]>;
   log: ZoneLogEntry[];
   stops: Stop[];
   mPerX: number;
   mPerY: number;
   spaghetti?: React.ReactNode;
   onEditInterior?: () => void;
-}> = ({ zone, station, stationMetric, items, devices, mode, insideIds, tracks, histories, log, stops, mPerX, mPerY, spaghetti, onEditInterior }) => {
+}> = ({ zone, station, stationMetric, items, devices, insideIds, tracks, log, stops, mPerX, mPerY, spaghetti, onEditInterior }) => {
   const b = bboxOf(zone);
   const now = Date.now();
 
-  // Señales reales del área (RFID, CSI/PIR, pulsador, ciclos). En demo, lo que no
-  // llegue de un dispositivo se emula a partir de los tracks y se marca "simulado".
+  // Señales reales del área.
   const [signals, setSignals] = React.useState<ZoneSignals | null>(null);
   React.useEffect(() => {
     let alive = true;
@@ -450,24 +419,13 @@ export const ZoneReadout: React.FC<{
       alive = false;
       clearInterval(id);
     };
-  }, [zone.zone_id, mode]);
+  }, [zone.zone_id]);
   const ageS = (iso?: string) => (iso ? (now - Date.parse(iso.endsWith('Z') ? iso : `${iso}Z`)) / 1000 : Infinity);
   const realRfid = signals?.rfid ?? [];
   const realCsi = signals?.csi && ageS(signals.csi.at) <= 60 ? signals.csi : null;
   const realPir = signals?.pir && ageS(signals.pir.at) <= 60 ? signals.pir : null;
   const realCycles = signals?.process.cycles_last_hour ?? 0;
-  const emulate = mode === 'demo';
-  const isReal: Partial<Record<InteriorKind, boolean>> = {
-    rfid: realRfid.length > 0,
-    csi: !!realCsi,
-    button: !!signals?.button,
-    process: realCycles > 0,
-    camera: mode !== 'demo',
-  };
-
   const zoneLog = log.filter((e) => e.zoneId === zone.id);
-  const lastRead = zoneLog[zoneLog.length - 1];
-  const csi = deriveCsi(insideIds, histories, mPerX, mPerY);
   const st = statusOf(stationMetric?.current_status ?? station?.current_status);
   const openStops = stops.filter(
     (s) => s.status === 'open' && (s.scope_id === station?.station_id || s.scope_id === station?.line_id || s.scope_id === zone.id || s.scope_type === 'plant'),
@@ -486,8 +444,6 @@ export const ZoneReadout: React.FC<{
     const best = statuses.includes('online') ? 'online' : statuses.includes('waiting') ? 'waiting' : statuses.includes('offline') ? 'offline' : 'none';
     const chips = [{ ...DEVICE_STATUS[best], title: linked.map((i) => i.device_id).join(', ') || 'Sin ESP32 vinculado' }];
     if (list.length > 1) chips.unshift({ label: `×${list.length}`, chip: 'chip-muted', color: C.ink3, title: `${list.length} instalados` });
-    if (mode === 'demo' && !isReal[kind]) chips.push({ label: 'simulado', chip: 'chip-warn', color: C.warn, title: 'El valor lo genera el simulador' });
-    if (mode === 'replay') chips.push({ label: 'grabación', chip: 'chip-warn', color: C.warn, title: 'Datos de una grabación reproducida' });
     return chips;
   };
   const installed = SENSOR_KINDS.filter((k) => sensorsOf(k).length > 0);
@@ -527,10 +483,6 @@ export const ZoneReadout: React.FC<{
           </li>
         ))}
       </ul>
-    ) : emulate && lastRead ? (
-      <span className="num text-[12px]">
-        {tagFor(lastRead.trackId)} · {lastRead.kind} · {hhmmss(lastRead.t)}
-      </span>
     ) : (
       <span className="text-ink-3">Sin lecturas en la última hora</span>
     ),
@@ -541,12 +493,6 @@ export const ZoneReadout: React.FC<{
         <span className="num text-[11px] text-ink-3">
           confianza {realCsi.confidence != null ? `${Math.round(realCsi.confidence * 100)}%` : '—'} · hace {Math.round(ageS(realCsi.at))} s
         </span>
-      </span>
-    ) : emulate ? (
-      <span className="flex items-center gap-2">
-        <span className="dot" style={{ background: CSI_META[csi.state].color }} />
-        {CSI_META[csi.state].label}
-        <span className="num text-[11px] text-ink-3">índice {csi.motion.toFixed(2)}</span>
       </span>
     ) : (
       <span className="text-ink-3">Sin datos del nodo CSI{realPir ? ` · PIR: ${realPir.present ? 'presente' : 'sin presencia'}` : ''}</span>

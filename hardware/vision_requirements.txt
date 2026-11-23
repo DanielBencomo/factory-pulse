@@ -1,8 +1,7 @@
-# Visión local: Python 3.10+
-# PyTorch se instala como dependencia de Ultralytics. Para una GPU NVIDIA puede
-# sustituirse por la compilación CUDA indicada en https://pytorch.org/get-started/locally/
-numpy>=1.26,<3
-opencv-python>=4.10,<5
-ultralytics>=8.3,<9
-lap>=0.5.12,<1
-requests>=2.32,<3
+# Línea base resuelta para Python 3.12. PyTorch y torchvision dependen de CPU/CUDA
+# y del sistema; sigue https://pytorch.org/get-started/locally/ si usas CUDA.
+numpy==2.5.5
+opencv-python==4.14.0.94
+ultralytics==8.4.217
+lap==0.5.14
+requests==2.34.2

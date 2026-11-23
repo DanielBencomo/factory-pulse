@@ -37,59 +37,6 @@ const TYPE_LABEL: Record<ZoneType, string> = {
   bathroom: 'Sanitarios',
   restricted: 'Restringida',
 };
-/**
- * Escenario de demostración del documento del hackathon: 3 zonas en flujo
- * (Materiales → Producción → Calidad) en un área de 10 × 6 m, con pasillo.
- */
-const hackathonPreset = (d: Layout): Layout => {
-  const W = 10;
-  const H = 6;
-  const r = (x0: number, y0: number, x1: number, y1: number): Poly => rect(x0 / W, y0 / H, x1 / W, y1 / H);
-  const lineId = 'line-demo';
-  const defs: { sid: string; name: string; eq: EquipmentType; box: [number, number, number, number]; cycle: number; pph: number }[] = [
-    { sid: 'st-mat', name: 'Materiales', eq: 'generic', box: [0.4, 0.4, 3.1, 3.9], cycle: 60, pph: 60 },
-    { sid: 'st-prod', name: 'Producción', eq: 'manual', box: [3.6, 0.4, 6.4, 3.9], cycle: 45, pph: 80 },
-    { sid: 'st-cal', name: 'Calidad', eq: 'aoi', box: [6.9, 0.4, 9.6, 3.9], cycle: 40, pph: 90 },
-  ];
-  const stations: Station[] = defs.map((s, i) => ({
-    id: s.sid,
-    station_id: s.sid,
-    line_id: lineId,
-    name: s.name,
-    order_in_line: i + 1,
-    ideal_cycle_seconds: s.cycle,
-    position_x: round((s.box[0] + s.box[2]) / 2 / W, 4),
-    position_y: round((s.box[1] + (s.box[3] - s.box[1]) * 0.6) / H, 4),
-    current_status: 'unknown',
-    target_pieces_per_hour: s.pph,
-    parts_produced_shift: 0,
-    equipment_type: s.eq,
-  }));
-  const zone = (id: string, name: string, type: ZoneType, poly: Poly, extra: Partial<PolygonZone> = {}): PolygonZone => ({
-    id,
-    zone_id: id,
-    floor_plan_id: d.floor_plan.id,
-    name,
-    type,
-    polygon: poly,
-    color: C.ink,
-    station_ids: [],
-    max_stay_seconds: 600,
-    is_aggregated_only: false,
-    line_id: null,
-    ...extra,
-  });
-  return {
-    floor_plan: { ...d.floor_plan, width_meters: W, height_meters: H },
-    lines: [{ id: lineId, name: 'Línea demo', order: 1, polygon: null }],
-    stations,
-    zones: [
-      ...defs.map((s) => zone(`zone-${s.sid}`, s.name, 'work', r(...s.box), { station_ids: [s.sid], line_id: lineId })),
-      zone('zone-demo-aisle', 'Pasillo', 'transit', r(0.4, 4.4, 9.6, 5.6), { max_stay_seconds: 60 }),
-    ],
-  };
-};
-
 const uid = (p: string) => `${p}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 const round = (v: number, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
 
@@ -942,17 +889,6 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({ initial, onCancel, o
                 <p className="text-[11.5px] text-ink-3 leading-snug mt-1.5">
                   Lo dibujado conserva su tamaño en metros. Después de cambiar medidas, recalibra la cámara.
                 </p>
-              </div>
-
-              <div className="border border-line rounded-[2px] p-3">
-                <div className="eyebrow mb-1">Plantilla</div>
-                <p className="text-[11.5px] text-ink-3 leading-snug mb-2">
-                  Escenario del documento del hackathon: área de 10 × 6 m con Materiales → Producción → Calidad y un pasillo. Reemplaza el borrador
-                  actual; no se guarda hasta presionar “Guardar layout” y se puede deshacer.
-                </p>
-                <button className="btn btn-sm" onClick={() => commit(() => hackathonPreset(draft))}>
-                  Cargar escenario del hackathon
-                </button>
               </div>
 
               <div>

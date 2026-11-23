@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.db_models import DBBadge, DBEvent, DBPolygonZone
-from app.simulator.engine import simulator
 
 router = APIRouter()
 
@@ -29,7 +28,7 @@ async def zone_signals(zone_id: str, session: AsyncSession = Depends(get_db)):
     if not zone:
         raise HTTPException(status_code=404, detail="Zona no encontrada")
     station_id = zone.station_ids[0] if zone.station_ids else None
-    mode = simulator.mode
+    mode = "live"
     now = datetime.utcnow()
 
     rows = (

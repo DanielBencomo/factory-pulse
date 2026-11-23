@@ -4,7 +4,7 @@ import { VisionPanel } from '../components/VisionPanel';
 import { api } from '../services/api';
 import {
   CameraConfig, CameraInput, CameraProfile, CameraSourceType,
-  DetectionProfile, FloorPlan, Line, PolygonZone, Station, SystemMode,
+  DetectionProfile, FloorPlan, Line, PolygonZone, Station,
 } from '../types';
 
 type CameraForm = {
@@ -70,7 +70,6 @@ const sourceUrl = (form: CameraForm) => {
 
 interface Props {
   cameras: CameraConfig[];
-  mode: SystemMode;
   floorPlan: FloorPlan | null;
   zones: PolygonZone[];
   lines: Line[];
@@ -80,7 +79,7 @@ interface Props {
 }
 
 export const CamerasPage: React.FC<Props> = ({
-  cameras, mode, floorPlan, zones, lines, stations, onChanged, onLayoutChanged,
+  cameras, floorPlan, zones, lines, stations, onChanged, onLayoutChanged,
 }) => {
   const [profiles, setProfiles] = useState<CameraProfile[]>([]);
   const [form, setForm] = useState<CameraForm>(emptyForm);
@@ -324,7 +323,7 @@ export const CamerasPage: React.FC<Props> = ({
           {cameras.map((camera) => (
             <div key={camera.camera_id} className="min-w-0 space-y-2">
               <VisionPanel
-                mode={mode} camera={camera} compact={columns >= 3}
+                camera={camera} compact={columns >= 3}
                 enableMapping={camera.configured} floorPlan={floorPlan} zones={zones} lines={lines} stations={stations}
                 onLayoutChanged={onLayoutChanged}
               />

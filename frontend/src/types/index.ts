@@ -1,4 +1,4 @@
-export type EventMode = 'demo' | 'replay' | 'live';
+export type EventMode = 'live';
 
 export type EventType =
   | 'position'
@@ -23,7 +23,7 @@ export type StationStatus =
 
 export type StopScope = 'plant' | 'line' | 'station' | 'zone';
 
-export type ModuleAvailability = 'active' | 'simulated' | 'needs_device' | 'experimental';
+export type ModuleAvailability = 'active' | 'needs_device' | 'experimental';
 
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 
@@ -221,7 +221,7 @@ export interface CameraInput {
 }
 
 export type DeviceStatus = 'online' | 'offline' | 'waiting' | 'warning';
-export type SystemMode = 'demo' | 'live' | 'replay';
+export type SystemMode = 'live';
 
 export type SpatialLayer = 'zones' | 'routes' | 'traffic' | 'dwell';
 
@@ -313,24 +313,6 @@ export interface SpatialSummary {
   };
 }
 
-export interface Playback {
-  active: boolean;
-  recording_id: string | null;
-  name: string | null;
-  speed: number;
-  loop: boolean;
-  progress: number;
-}
-
-export interface Recording {
-  id: string;
-  name: string;
-  source_mode: string;
-  started_at: string;
-  ended_at: string;
-  duration_s: number;
-  event_count: number;
-}
 
 export interface Badge {
   tag_id: string;
@@ -596,6 +578,5 @@ export interface CatalogModule {
   relative_cost: string;
   expected_resolution: string;
   deployment_requirements: string;
-  is_active_in_demo: boolean;
   toggle_enabled: boolean;
 }

@@ -10,8 +10,8 @@
 ---
 
 ## ADR 02: Desacoplamiento de Módulos (8 Familias con Catálogo Declarativo)
-- **Decisión:** Implementar un registro declarativo con estados de disponibilidad: `active`, `simulated`, `needs_device` y `experimental`.
-- **Justificación:** En un hackathon de 12-15 horas, el equipo de software debe poder demostrar la plataforma completa sin bloquearse si faltan sensores físicos específicos (como lectores UHF o anclas UWB).
+- **Decisión:** Implementar un registro declarativo con estados de disponibilidad: `active`, `needs_device` y `experimental`.
+- **Justificación:** Exponer las dependencias de hardware de cada módulo.
 - **Consecuencias:** Claridad para el jurado e ingenieros de planta: los módulos sin sensor están claramente rotulados como *needs_device*, evitando afirmaciones falsas.
 
 ---

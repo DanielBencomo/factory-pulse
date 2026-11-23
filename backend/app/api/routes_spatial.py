@@ -12,7 +12,6 @@ from app.calculations.analytics import point_in_polygon
 from app.calculations.spatial import build_spatial_insights, compute_spatial_summary
 from app.database import get_db
 from app.models.db_models import DBEvent, DBFloorPlan, DBLine, DBPolygonZone, DBStation
-from app.simulator.engine import simulator
 
 
 router = APIRouter()
@@ -103,9 +102,8 @@ async def _build_spatial_response(
     scope: str,
     scope_id: Optional[str],
     minutes: int,
-    mode: Optional[str],
 ) -> Dict[str, Any]:
-    active_mode = mode or simulator.mode
+    active_mode = "live"
     floor_plan = (await session.execute(select(DBFloorPlan))).scalars().first()
     width_m = floor_plan.width_meters if floor_plan else 40.0
     height_m = floor_plan.height_meters if floor_plan else 25.0
@@ -120,10 +118,7 @@ async def _build_spatial_response(
         )
     ).scalar()
     now = datetime.utcnow()
-    if active_mode in ("demo", "replay") and latest is not None:
-        end = latest
-    else:
-        end = max(now, latest) if latest is not None else now
+    end = max(now, latest) if latest is not None else now
     start = end - timedelta(minutes=minutes)
     lead = timedelta(seconds=15)
     rows = (
@@ -212,10 +207,9 @@ async def spatial_summary(
     scope: str = Query("plant", pattern="^(plant|line|station|zone)$"),
     scope_id: Optional[str] = Query(None),
     minutes: int = Query(60, ge=5, le=720),
-    mode: Optional[str] = Query(None, pattern="^(demo|live|replay)$"),
     session: AsyncSession = Depends(get_db),
 ):
-    return await _build_spatial_response(session, scope=scope, scope_id=scope_id, minutes=minutes, mode=mode)
+    return await _build_spatial_response(session, scope=scope, scope_id=scope_id, minutes=minutes)
 
 
 @router.get("/spatial/insights")
@@ -223,10 +217,9 @@ async def spatial_insights(
     scope: str = Query("plant", pattern="^(plant|line|station|zone)$"),
     scope_id: Optional[str] = Query(None),
     minutes: int = Query(60, ge=5, le=720),
-    mode: Optional[str] = Query(None, pattern="^(demo|live|replay)$"),
     session: AsyncSession = Depends(get_db),
 ):
-    result = await _build_spatial_response(session, scope=scope, scope_id=scope_id, minutes=minutes, mode=mode)
+    result = await _build_spatial_response(session, scope=scope, scope_id=scope_id, minutes=minutes)
     return {
         "mode": result["mode"],
         "scope": result["scope"],

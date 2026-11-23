@@ -99,7 +99,7 @@ class DBDevice(Base):
     last_heartbeat = Column(DateTime, nullable=True)
     last_latency_ms = Column(Float, nullable=True)
     status = Column(String(32), default="online")
-    # True solo para los nodos de demostración que alimenta el simulador.
+    # Discriminador histórico: nunca se crean dispositivos de este tipo.
     simulated = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -166,18 +166,6 @@ class DBBadge(Base):
     person = Column(String(128), nullable=False)
     role = Column(String(64), nullable=True)
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class DBRecording(Base):
-    """Tramo de eventos guardado como respaldo para reproducirlo (plan B de la demo)."""
-    __tablename__ = "recordings"
-
-    id = Column(String(64), primary_key=True)
-    name = Column(String(128), nullable=False)
-    source_mode = Column(String(16), nullable=False)
-    started_at = Column(DateTime, nullable=False)
-    ended_at = Column(DateTime, nullable=False)
-    event_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class DBStopReason(Base):

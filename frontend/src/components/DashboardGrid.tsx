@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Analytics, Device, MetricsSummary, Stop, SystemMode } from '../types';
+import { Alert, Analytics, Device, MetricsSummary, Stop } from '../types';
 import { C, STATE_META, STATE_ORDER, statusOf } from '../theme';
 import { shortStationName } from '../layout/geometry';
 
@@ -109,7 +109,6 @@ export const KpiStrip: React.FC<{ analytics: Analytics | null }> = ({ analytics:
       <div className="px-5 pt-3 flex items-baseline justify-between">
         <span className="eyebrow">Últimos {fmtWindow(a) || '…'} · reconstruido desde eventos</span>
         {a?.mode === 'live' && <span className="chip chip-info">en vivo</span>}
-        {a?.mode === 'replay' && <span className="chip chip-warn">reproducción</span>}
       </div>
       <div className="overflow-hidden">
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 -ml-px -mt-px">
@@ -364,7 +363,7 @@ const SOURCES: { type: string; label: string; letter: string }[] = [
 ];
 
 // Muestra en una línea si cada fuente del documento está aportando datos ahora.
-export const SourcesStrip: React.FC<{ devices: Device[]; tracksCount: number; mode: SystemMode }> = ({ devices, tracksCount, mode }) => {
+export const SourcesStrip: React.FC<{ devices: Device[]; tracksCount: number }> = ({ devices, tracksCount }) => {
   const real = devices.filter((d) => !d.simulated && d.is_active);
   return (
     <section className="panel px-4 py-2.5 flex flex-wrap items-center gap-x-5 gap-y-2" aria-label="Estado de las fuentes">
@@ -372,14 +371,10 @@ export const SourcesStrip: React.FC<{ devices: Device[]; tracksCount: number; mo
       {SOURCES.map((s) => {
         const list = real.filter((d) => d.type === s.type);
         const online = list.filter((d) => d.status === 'online').length;
-        const cameraLive = s.type === 'camera_vision' && tracksCount > 0 && mode !== 'demo';
+        const cameraLive = s.type === 'camera_vision' && tracksCount > 0;
         const tone = online > 0 || cameraLive ? C.ok : list.some((d) => d.status === 'waiting') ? C.warn : list.length ? C.bad : C.ink4;
         const text =
-          mode === 'demo'
-            ? 'simulado'
-            : mode === 'replay'
-              ? 'grabación'
-              : list.length === 0 && !cameraLive
+          list.length === 0 && !cameraLive
                 ? 'sin registrar'
                 : s.type === 'camera_vision' && cameraLive
                   ? `${tracksCount} track${tracksCount === 1 ? '' : 's'}`
@@ -388,7 +383,7 @@ export const SourcesStrip: React.FC<{ devices: Device[]; tracksCount: number; mo
           <span key={s.type} className="flex items-center gap-1.5 text-[12.5px]">
             <span className="num inline-flex items-center justify-center w-[18px] h-[18px] text-[10.5px] font-semibold bg-ink text-paper">{s.letter}</span>
             <span className="font-medium">{s.label}</span>
-            <span className="dot" style={{ background: mode === 'live' ? tone : C.warn }} />
+            <span className="dot" style={{ background: tone }} />
             <span className="text-ink-3 text-[11.5px]">{text}</span>
           </span>
         );

@@ -6,7 +6,6 @@ import { ZoneOccupancyPanel } from './components/ZoneOccupancyPanel';
 import { SpatialInsightsPanel } from './components/SpatialInsightsPanel';
 import { KpiStrip, StationTablePanel, AlertsPanel, StopsPanel, SourcesStrip } from './components/DashboardGrid';
 import { StopsModal } from './components/StopsModal';
-import { SimulatorControls } from './components/SimulatorControls';
 import { ModuleCatalogModal } from './components/ModuleCatalogModal';
 import { AlertsManagerModal } from './components/AlertsManagerModal';
 import { CalibrationModal } from './components/CalibrationModal';
@@ -15,7 +14,6 @@ import { LayoutEditor } from './components/LayoutEditor';
 import { InteriorEditor } from './components/InteriorEditor';
 import { DevicesPage } from './pages/DevicesPage';
 import { CamerasPage } from './pages/CamerasPage';
-import { RecordingsModal } from './components/RecordingsModal';
 import { JustifyStopModal } from './components/JustifyStopModal';
 import { api } from './services/api';
 import { wsClient } from './services/websocket';
@@ -34,8 +32,6 @@ import {
   ScaleCalibration,
   Layout,
   Line,
-  SystemMode,
-  Playback,
   SpatialLayer,
   SpatialSummary,
   CameraConfig,
@@ -56,7 +52,6 @@ export const App: React.FC = () => {
   const [windowMinutes, setWindowMinutes] = useState<number>(60);
   const [lineId, setLineId] = useState<string>('line-1');
   const [focusLineId, setFocusLineId] = useState<string | null>(null);
-  const [mode, setMode] = useState<SystemMode>('demo');
   const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
 
   // Datos
@@ -79,18 +74,13 @@ export const App: React.FC = () => {
   const [mapLayer, setMapLayer] = useState<SpatialLayer | null>(null);
   const [mapRequestVersion, setMapRequestVersion] = useState(0);
 
-  // Simulador
-  const [simRunning, setSimRunning] = useState<boolean>(true);
-  const [simScene, setSimScene] = useState<number>(1);
-  const [simSpeed, setSimSpeed] = useState<number>(1.0);
   const [tickTime, setTickTime] = useState<number | undefined>(undefined);
   const [tracks, setTracks] = useState<Record<string, { x: number; y: number; name: string }>>({});
 
   // Editores y modales
   const [layoutDraft, setLayoutDraft] = useState<Layout | null>(null);
   const [interiorZoneId, setInteriorZoneId] = useState<string | null>(null);
-  const [modal, setModal] = useState<null | 'stop' | 'sim' | 'modules' | 'rules' | 'export' | 'calib' | 'recordings'>(null);
-  const [playback, setPlayback] = useState<Playback | null>(null);
+  const [modal, setModal] = useState<null | 'stop' | 'modules' | 'rules' | 'export' | 'calib'>(null);
   const [justifying, setJustifying] = useState<Stop | null>(null);
 
   /* ── navegación por hash (#/metricas, #/dispositivos…) ── */
@@ -112,6 +102,7 @@ export const App: React.FC = () => {
     setZones(zonesList);
     setStations(stationsList);
     setLines(linesList);
+    setLineId((current) => linesList.some((line) => line.id === current) ? current : linesList[0]?.id ?? '');
   }, []);
 
   const refreshAnalytics = useCallback(() => {
@@ -120,28 +111,22 @@ export const App: React.FC = () => {
   }, [lineId, windowMinutes]);
 
   const refreshSpatial = useCallback(() => {
-    api.getSpatialSummary('plant', null, windowMinutes, mode)
+    api.getSpatialSummary('plant', null, windowMinutes)
       .then((value) => {
         setSpatial(value);
         setSpatialError(null);
       })
       .catch((error) => setSpatialError(error instanceof Error ? error.message : 'Error desconocido'));
-  }, [windowMinutes, mode]);
+  }, [windowMinutes]);
 
   const refreshDevices = useCallback(() => api.listDevices().then(setDevices).catch(console.error), []);
   const refreshCameras = useCallback(() => api.listCameras().then(setCameras).catch(console.error), []);
 
-  // Carga completa. Se repite cada vez que vuelve la conexión con el servidor, para que
-  // un reinicio del backend durante la demo no deje la pantalla vacía.
+  // Carga completa, también al recuperar la conexión.
   const loadAll = useCallback(() => {
     refreshLayout().catch(console.error);
     refreshDevices();
     refreshCameras();
-    api.getSystemMode().then((m) => {
-      setMode(m.mode);
-      setSimRunning(m.simulator_running);
-      setPlayback(m.playback ?? null);
-    }).catch(console.error);
     Promise.all([api.listStops(), api.listStopReasons(), api.listAlerts(), api.listAlertRules(), api.listModules()])
       .then(([s, r, a, rules, mods]) => {
         setStops(s);
@@ -199,19 +184,14 @@ export const App: React.FC = () => {
       }, 1500);
     };
     const off = wsClient.subscribe((msg) => {
-      if (msg.type === 'SIM_TICK' || msg.type === 'TRACKS') {
+      if (msg.type === 'TRACKS') {
         if (msg.tracks) setTracks(msg.tracks);
-        setSimScene(msg.scene);
-        if (msg.sim_time) setTickTime(Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(msg.sim_time) ? msg.sim_time : `${msg.sim_time}Z`));
+        if (msg.observed_at) setTickTime(Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(msg.observed_at) ? msg.observed_at : `${msg.observed_at}Z`));
       } else if (msg.type === 'LAYOUT_UPDATED') {
         refreshLayout().catch(console.error);
       } else if (msg.type === 'DEVICE_CONNECTED') {
         refreshDevices();
         refreshCameras();
-      } else if (msg.type === 'MODE_CHANGED') {
-        setMode(msg.mode);
-        if (msg.mode !== 'demo') setTracks({});
-        api.getSystemMode().then((m) => setPlayback(m.playback ?? null)).catch(console.error);
       } else if (msg.type === 'NEW_EVENT' || msg.type === 'STOP_UPDATED' || msg.type === 'ALERT_UPDATED') {
         if (msg.event?.type === 'position') return;
         refreshSoon();
@@ -227,19 +207,6 @@ export const App: React.FC = () => {
   }, [refreshLayout, refreshDevices, refreshCameras, loadAll]);
 
   /* ── acciones ── */
-  const changeMode = async (m: SystemMode) => {
-    try {
-      const r = await api.setSystemMode(m);
-      setMode(r.mode);
-      setSimRunning(r.simulator_running);
-      setPlayback(r.playback ?? null);
-      if (r.mode !== 'demo') setTracks({});
-      refreshAnalytics();
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
   const changeLine = (id: string) => {
     setLineId(id);
     setFocusLineId(id);
@@ -325,7 +292,7 @@ export const App: React.FC = () => {
               tracks={tracks}
               tickTime={tickTime}
               devices={devices}
-              mode={mode}
+
               focusLineId={focusLineId}
               focusZoneId={focusZoneId}
               requestedLayer={mapLayer}
@@ -349,7 +316,7 @@ export const App: React.FC = () => {
           </div>
         </div>
         <KpiStrip analytics={analytics} />
-        <SourcesStrip devices={devices} tracksCount={Object.keys(tracks).length} mode={mode} />
+        <SourcesStrip devices={devices} tracksCount={Object.keys(tracks).length} />
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
           <div className="xl:col-span-7 min-w-0">
             <StationTablePanel analytics={analytics} metrics={metrics} lineName={lineName} />
@@ -376,12 +343,12 @@ export const App: React.FC = () => {
     content = (
       <div className="space-y-4">
         <CamerasPage
-          cameras={cameras} mode={mode} floorPlan={floorPlan}
+          cameras={cameras} floorPlan={floorPlan}
           zones={zones} lines={lines} stations={stations}
           onChanged={async () => { await Promise.all([refreshCameras(), refreshDevices()]); }}
           onLayoutChanged={refreshLayout}
         />
-        <ZoneOccupancyPanel mode={mode} />
+        <ZoneOccupancyPanel />
       </div>
     );
   } else if (page === 'metricas') {
@@ -422,7 +389,7 @@ export const App: React.FC = () => {
       </div>
     );
   } else if (page === 'dispositivos') {
-    content = <DevicesPage devices={devices} stations={stations} mode={mode} onModeChange={changeMode} onChanged={refreshDevices} />;
+    content = <DevicesPage devices={devices} stations={stations} onChanged={refreshDevices} />;
   } else if (page === 'layout') {
     content = layoutDraft ? (
       <LayoutEditor
@@ -450,9 +417,6 @@ export const App: React.FC = () => {
         devicesOnline={realDevices.filter((d) => d.status === 'online').length}
         devicesReal={realDevices.length}
         devicesPending={pendingDevices}
-        simulatorAvailable={mode === 'demo'}
-        onOpenSimulator={() => setModal('sim')}
-        onOpenRecordings={() => setModal('recordings')}
         onOpenCalibration={() => setModal('calib')}
         onOpenModules={() => setModal('modules')}
         onOpenExport={() => setModal('export')}
@@ -466,25 +430,16 @@ export const App: React.FC = () => {
           onLineChange={changeLine}
           windowMinutes={windowMinutes}
           onWindowChange={setWindowMinutes}
-          mode={mode}
-          onModeChange={changeMode}
-          playback={playback}
+
+
           isWsConnected={isWsConnected}
           openStopsCount={openStops}
           onDeclareStop={() => setModal('stop')}
           showContext={page === 'planta' || page === 'metricas'}
         />
-        {mode === 'replay' && (
-          <div className="px-4 lg:px-6 py-2 text-[12.5px] bg-warn-soft text-warn border-b border-line flex items-center gap-3">
-            Reproduciendo la grabación “{playback?.name ?? '…'}”: los tableros muestran datos grabados, no la planta en este momento.
-            <button className="btn btn-sm ml-auto" onClick={() => changeMode('live')}>
-              Detener y volver a En vivo
-            </button>
-          </div>
-        )}
-        {mode === 'live' && page !== 'dispositivos' && realDevices.every((d) => d.status !== 'online') && (
+        {page !== 'dispositivos' && devices.every((d) => d.status !== 'online') && (
           <div className="px-4 lg:px-6 py-2 text-[12.5px] bg-info-soft text-info border-b border-line flex items-center gap-3">
-            En vivo: el simulador está apagado y todavía no hay dispositivos conectados, por eso los tableros aparecen vacíos.
+            Todavía no hay dispositivos conectados. Los datos aparecerán cuando llegue telemetría.
             <button className="btn btn-sm ml-auto" onClick={() => navigate('dispositivos')}>
               Ver dispositivos
             </button>
@@ -505,33 +460,6 @@ export const App: React.FC = () => {
           defaultLineId={lineId}
         />
       )}
-      <SimulatorControls
-        isOpen={modal === 'sim'}
-        onClose={() => setModal(null)}
-        isRunning={simRunning}
-        currentScene={simScene}
-        speed={simSpeed}
-        onStart={async (speed) => {
-          await api.startSimulator(speed);
-          setSimRunning(true);
-          setSimSpeed(speed);
-        }}
-        onPause={async () => {
-          await api.pauseSimulator();
-          setSimRunning(false);
-        }}
-        onReset={async () => {
-          await api.resetSimulator(true);
-          setSimScene(1);
-          refreshAnalytics();
-          refreshSpatial();
-        }}
-        onSetScene={async (n) => {
-          await api.setSimulatorScene(n);
-          setSimScene(n);
-        }}
-        onInjectEvent={(ev) => api.injectSimulatorEvent(ev)}
-      />
       <ModuleCatalogModal isOpen={modal === 'modules'} onClose={() => setModal(null)} modules={modules} />
       <AlertsManagerModal
         key={modal === 'rules' ? 'rules' : 'closed'}
@@ -550,7 +478,7 @@ export const App: React.FC = () => {
           onClose={() => setModal(null)}
           calibration={
             floorPlan?.calibration || {
-              is_calibrated: true,
+              is_calibrated: false,
               point1: [0.05, 0.5],
               point2: [0.95, 0.5],
               real_distance_meters: 36.0,
@@ -561,18 +489,6 @@ export const App: React.FC = () => {
         />
       )}
       <ExportModal isOpen={modal === 'export'} onClose={() => setModal(null)} />
-      {modal === 'recordings' && (
-        <RecordingsModal
-          mode={mode}
-          playback={playback}
-          onClose={() => setModal(null)}
-          onPlaybackChange={(p) => {
-            setPlayback(p);
-            refreshAnalytics();
-          }}
-          onStop={() => changeMode('live')}
-        />
-      )}
       {justifying && (
         <JustifyStopModal
           stop={justifying}

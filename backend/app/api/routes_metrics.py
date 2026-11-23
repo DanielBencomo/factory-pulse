@@ -54,7 +54,7 @@ async def get_metrics_summary(
     stations = st_res.scalars().all()
 
     # 3. Fetch events in window
-    ev_stmt = select(DBEvent).where(DBEvent.occurred_at >= window_start).order_by(DBEvent.occurred_at)
+    ev_stmt = select(DBEvent).where(DBEvent.occurred_at >= window_start, DBEvent.mode == EventMode.LIVE.value).order_by(DBEvent.occurred_at)
     ev_res = await session.execute(ev_stmt)
     events = ev_res.scalars().all()
 
@@ -178,7 +178,7 @@ async def get_metrics_summary(
     open_stops_res = await session.execute(open_stops_stmt)
     open_stops_count = len(open_stops_res.scalars().all())
 
-    dev_stmt = select(DBDevice)
+    dev_stmt = select(DBDevice).where(DBDevice.simulated.is_not(True))
     dev_res = await session.execute(dev_stmt)
     all_devs = dev_res.scalars().all()
     online_devs_count = sum(1 for d in all_devs if d.status == "online")

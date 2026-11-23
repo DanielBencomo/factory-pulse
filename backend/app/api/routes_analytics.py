@@ -1,7 +1,6 @@
 """
 GET /analytics: métricas de una línea en una ventana de tiempo, reconstruidas desde
-eventos (ver app/calculations/analytics.py). Solo usa eventos del modo activo
-(demo o en vivo) para no mezclar datos simulados con los de dispositivos reales.
+eventos en vivo (ver app/calculations/analytics.py).
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -12,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.calculations.analytics import compute_line_analytics
 from app.database import get_db
 from app.models.db_models import DBEvent, DBFloorPlan, DBLine, DBPolygonZone, DBStation, DBStop
-from app.simulator.engine import simulator
 
 router = APIRouter()
 
@@ -25,11 +23,10 @@ def _epoch(dt: datetime) -> float:
 async def line_analytics(
     line_id: str = Query("line-1"),
     minutes: int = Query(60, ge=5, le=720),
-    mode: Optional[str] = Query(None, pattern="^(demo|live|replay)$"),
     compare: bool = Query(True, description="Incluir el resumen de la ventana anterior del mismo largo"),
     session: AsyncSession = Depends(get_db),
 ):
-    mode = mode or simulator.mode
+    mode = "live"
     now = datetime.utcnow()
     ctx = await _context(session, line_id)
     result = await _compute(session, ctx, mode, now - timedelta(minutes=minutes), now)

@@ -175,7 +175,7 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
   }, [a]);
 
   /* 3 · Ritmo por estación vs meta (cuello de botella) */
-  const measured = stations.filter((s) => s.has_process_data && s.available_s >= 60);
+  const measured = stations.filter((s) => s.pieces_per_hour != null);
   const rate = useMemo(() => {
     if (!a || measured.length === 0) return null;
     const bn = a.summary.bottleneck_station_id;
@@ -188,7 +188,7 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
         axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(0,0,0,0.04)' } },
         formatter: (ps: any[]) => {
           const s = measured[ps[0].dataIndex];
-          return `<b>${ps[0].name}</b><br/>Real: ${s.pieces_per_hour} pzs/h<br/>Meta: ${s.target_pph} pzs/h<br/>Ciclo medio: ${s.avg_cycle_s ?? '—'} s (ideal ${s.ideal_cycle_s} s)`;
+          return `<b>${ps[0].name}</b><br/>Reportado: ${s.pieces_per_hour} pzs/h<br/>Meta: ${s.target_pph} pzs/h<br/>Ciclo medio: ${s.avg_cycle_s ?? '—'} s (ideal ${s.ideal_cycle_s} s)`;
         },
       },
       grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
@@ -218,7 +218,7 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
 
   /* 4 · Salida de la línea por intervalo */
   const output = useMemo(() => {
-    if (!a || !a.summary.has_process_data) return null;
+    if (!a || a.summary.line_output == null) return null;
     const target = a.line_target_per_bucket;
     return {
       ...chartBase,
@@ -238,7 +238,7 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
           data: a.line_output_by_bucket.map((v, i) => ({
             value: v,
             // el último intervalo va en curso: se atenúa para no leerlo como caída
-            itemStyle: { color: v < target * 0.85 ? C.warn : C.brand, opacity: i === a.line_output_by_bucket.length - 1 ? 0.45 : 1 },
+            itemStyle: { color: v != null && v < target * 0.85 ? C.warn : C.brand, opacity: i === a.line_output_by_bucket.length - 1 ? 0.45 : 1 },
           })),
           markLine: {
             symbol: 'none',
@@ -387,7 +387,7 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
         axisPointer: { type: 'shadow' },
         formatter: (ps: any[]) => {
           const z = occupancyRows[ps[0].dataIndex];
-          return `<b>${z.name}</b><br/>Ahora: ${z.current_count}<br/>Promedio: ${z.average_occupancy}<br/>Pico: ${z.peak_occupancy}<br/>Capacidad: ${z.max_capacity ?? 'no configurada'}<br/>Densidad pico: ${z.peak_density_person_m2} pers/m²`;
+          return `<b>${z.name}</b><br/>Ahora: ${z.current_count ?? 'sin dato'}<br/>Promedio: ${z.average_occupancy ?? 'sin dato'}<br/>Pico: ${z.peak_occupancy}<br/>Capacidad: ${z.max_capacity ?? 'no configurada'}<br/>Densidad pico: ${z.peak_density_person_m2 ?? '—'} pers/m²`;
         },
       },
       legend: { bottom: 0, textStyle: { color: C.ink2, fontSize: 11 } },
@@ -481,7 +481,7 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
     if (!a || qualityRows.length === 0) return null;
     return {
       ...chartBase,
-      tooltip: { ...chartBase.tooltip, trigger: 'axis', formatter: (ps: any[]) => `<b>${ps[0].name}</b><br/>Piezas buenas: ${ps[0].value}%` },
+      tooltip: { ...chartBase.tooltip, trigger: 'axis', formatter: (ps: any[]) => `<b>${ps[0].name}</b><br/>Buenas entre inspeccionadas: ${ps[0].value}% · ${qualityRows[ps[0].dataIndex].inspected_pieces} inspeccionadas` },
       grid: { left: 8, right: 16, top: 12, bottom: 8, containLabel: true },
       xAxis: { type: 'category', data: qualityRows.map((s) => `${s.order} · ${shortStationName(s.name)}`), ...axisCategory },
       yAxis: { type: 'value', min: 80, max: 100, ...axisValue, axisLabel: { ...axisValue.axisLabel, formatter: '{value}%' } },
@@ -499,12 +499,12 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
 
   const spatialKpis = spatial
     ? [
-        ['Ocupación ahora', spatial.summary.current_people?.toFixed(0) ?? '—', 'personas'],
-        ['Tiempo observado', spatial.summary.observed_person_minutes.toFixed(1), 'persona·min'],
-        ['Recorrido agregado', spatial.summary.distance_m.toFixed(0), 'm'],
-        ['Retorno inmediato', spatial.summary.backtrack_ratio_pct.toFixed(0), '% A→B→A'],
-        ['Cobertura', spatial.summary.coverage_pct.toFixed(0), '% de ventana'],
-        ['Exceso de capacidad', spatial.summary.congestion_excess_person_minutes.toFixed(1), 'persona·min'],
+        ['Detecciones ahora', spatial.summary.current_people?.toFixed(0) ?? '—', 'personas'],
+        ['Tiempo observado', spatial.summary.observed_person_minutes?.toFixed(1) ?? '—', 'persona·min'],
+        ['Recorrido estimado', spatial.summary.distance_m?.toFixed(0) ?? '—', 'm'],
+        ['Retorno inmediato', spatial.summary.total_transitions ? spatial.summary.backtrack_ratio_pct.toFixed(0) : '—', '% A→B→A'],
+        ['Cobertura temporal', spatial.summary.coverage_pct.toFixed(0), '% de ventana'],
+        ['Exceso de capacidad', spatial.zones.some((z) => z.coverage_pct > 0 && z.max_capacity != null) ? spatial.summary.congestion_excess_person_minutes.toFixed(1) : '—', 'persona·min'],
       ]
     : [];
 
@@ -605,7 +605,7 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
         {shown('bottleneck') && (
           <Panel title="¿Qué estación limita la salida?" subtitle="Piezas por hora contra meta. Se marca la estación con menor ritmo medido, no una causa raíz.">
             {rate ? <Chart option={rate} height={240} /> : (
-              <Empty>{stations.some((s) => s.has_process_data) ? 'No hubo tiempo disponible para medir el ritmo.' : 'Falta un sensor de proceso vinculado a las estaciones.'}</Empty>
+              <Empty>{stations.some((s) => s.has_process_data) ? 'No se reportaron pulsos de piezas en la ventana.' : 'Se necesitan pulsos de piezas de las estaciones.'}</Empty>
             )}
           </Panel>
         )}
@@ -685,10 +685,10 @@ export const MetricsPage: React.FC<{ analytics: Analytics | null; spatial: Spati
           </ul>
           <div className="grid md:grid-cols-3 gap-3 mt-3 pt-3 border-t border-line">
             <div><b className="font-medium text-ink">Observado</b><p className="text-ink-3">Posición, ocupación, ciclos, calidad y paros recibidos por los sensores disponibles.</p></div>
-            <div><b className="font-medium text-ink">Inferido</b><p className="text-ink-3">Estado, transiciones, quietud, cuello y congestión calculados con reglas documentadas.</p></div>
+            <div><b className="font-medium text-ink">Inferido</b><p className="text-ink-3">Estado, transiciones, quietud, menor ritmo observado y alertas de congestión se estiman con reglas.</p></div>
             <div><b className="font-medium text-ink">No disponible</b><p className="text-ink-3">OEE completo, causa raíz, WIP y tiempo de flujo si faltan identidad de pieza, calendario o eventos de falla.</p></div>
           </div>
-          <p className="mt-3 text-ink-3">Quietud no equivale a improductividad. Los KPIs de proceso usan tiempo disponible y los espaciales publican agregados sin reconocimiento facial; la cobertura acompaña siempre la interpretación.</p>
+          <p className="mt-3 text-ink-3">Quietud no equivale a improductividad. El ritmo divide los pulsos reportados entre toda la ventana; no extrapola lapsos sin señal. La cobertura espacial es temporal, no física, y las cámaras no deduplican detecciones.</p>
         </section>
       )}
 

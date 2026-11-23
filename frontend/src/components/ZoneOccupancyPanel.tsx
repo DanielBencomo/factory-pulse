@@ -17,35 +17,36 @@ export const ZoneOccupancyPanel: React.FC = () => {
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
-  const at = snapshot?.at ? Date.parse(snapshot.at.endsWith('Z') ? snapshot.at : `${snapshot.at}Z`) : NaN;
-  const fresh = Number.isFinite(at) && Date.now() - at < 20_000;
-  const total = snapshot?.total_people ?? 0;
+  const observedAt = snapshot?.observed_at ? Date.parse(snapshot.observed_at) : NaN;
+  const fresh = !error && !!snapshot && Date.now() - observedAt <= snapshot.max_age_seconds * 1_000;
+  const total = fresh ? snapshot?.total_people : null;
 
   return (
     <section className="panel">
       <header className="panel-head !items-start">
         <div>
           <div className="flex items-center gap-2"><Users size={15} /><h2 className="panel-title">Personas por área</h2></div>
-          <p className="text-[11.5px] text-ink-3 mt-0.5">Conteo actual anónimo · actualización cada 2 s</p>
+          <p className="text-[11.5px] text-ink-3 mt-0.5">Detecciones recientes · no identifica ni deduplica entre cámaras</p>
         </div>
         <div className="flex items-center gap-1.5">
           <span className={`chip ${fresh && !error ? 'chip-ok' : 'chip-muted'}`}>
             <span className={`dot ${fresh && !error ? 'bg-ok' : 'bg-ink-4'}`} />
-            {error ? 'Sin backend' : 'En vivo'}
+            {error ? 'Sin backend' : fresh ? 'Dato reciente' : 'Sin señal reciente'}
           </span>
-          <span className="chip chip-brand num">{total} en planta</span>
+          <span className="chip chip-brand num">{total == null ? '— detecciones' : `${total} detecciones`}</span>
         </div>
       </header>
       {!snapshot ? (
         <div className="p-5 text-[12.5px] text-ink-3">{error ? 'No se pudo consultar la ocupación.' : 'Leyendo ocupación…'}</div>
       ) : (
         <div className="p-3.5">
-          {snapshot.zones.every((zone) => zone.count === 0) && (
-            <p className="text-[11.5px] text-ink-3 mb-2">Sin señal agregada reciente; los conteos aparecerán al publicar la cámara.</p>
+          {snapshot.zones.length > 0 && (!fresh || snapshot.zones.every((zone) => zone.count == null)) && (
+            <p className="text-[11.5px] text-ink-3 mb-2">Sin observaciones recientes asignadas a las zonas. Esto no significa que estén vacías.</p>
           )}
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
             {snapshot.zones.map((zone) => {
-              const over = zone.max_capacity != null && zone.count > zone.max_capacity;
+              const count = fresh ? zone.count : null;
+              const over = zone.max_capacity != null && count != null && count > zone.max_capacity;
               return (
                 <div key={zone.zone_id} className={`border p-2.5 rounded-[2px] ${over ? 'border-bad bg-bad-soft' : 'border-line bg-paper'}`}>
                   <div className="flex items-start justify-between gap-2">
@@ -53,16 +54,15 @@ export const ZoneOccupancyPanel: React.FC = () => {
                     {zone.is_aggregated_only && <ShieldCheck className="h-3.5 w-3.5 text-ink-3 shrink-0" aria-label="Solo conteo agregado" />}
                   </div>
                   <div className="flex items-end gap-1 mt-1">
-                    <span className="num text-[23px] leading-none font-semibold">{zone.count}</span>
-                    <span className="text-[10.5px] text-ink-3 mb-0.5">personas</span>
+                    <span className="num text-[23px] leading-none font-semibold">{count ?? '—'}</span>
+                    <span className="text-[10.5px] text-ink-3 mb-0.5">{count == null ? 'sin dato' : 'detecciones'}</span>
                   </div>
-                  {over && <div className="text-[10.5px] text-bad mt-1 flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> supera capacidad {zone.max_capacity}</div>}
+                  {over && <div className="text-[10.5px] text-bad mt-1 flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> revisar capacidad {zone.max_capacity}</div>}
                   {zone.is_aggregated_only && <div className="text-[10px] text-ink-3 mt-1">sin IDs ni trayectorias</div>}
                 </div>
               );
             })}
           </div>
-          {snapshot.unassigned > 0 && <p className="text-[11px] text-ink-3 mt-2 num">Fuera de áreas marcadas: {snapshot.unassigned}</p>}
         </div>
       )}
     </section>

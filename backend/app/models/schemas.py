@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 from app.models.domain import (
@@ -16,6 +16,7 @@ class BaseResponse(BaseModel):
 # --- EVENT PAYLOADS ---
 
 class PositionPayload(BaseModel):
+    coordinate_space: Literal["floor", "image"]
     x: float = Field(..., ge=0.0, le=1.0, description="Normalized X coordinate 0..1")
     y: float = Field(..., ge=0.0, le=1.0, description="Normalized Y coordinate 0..1")
     track_id: str = Field(..., description="Ephemeral track ID, e.g. TRK-A12")
@@ -28,6 +29,7 @@ class ZoneOccupancyPayload(BaseModel):
     zone_id: str
     count: int = Field(..., ge=0)
     aggregated: bool = True
+    coordinate_space: Optional[Literal["floor", "image"]] = None
     source: str = "vision_yolo_bytetrack"
     counts: Optional[Dict[str, int]] = Field(
         None, description="Snapshot opcional zone_id -> personas de una cámara"
@@ -55,7 +57,8 @@ class MachineStatePayload(BaseModel):
 class CyclePayload(BaseModel):
     station_id: str
     cycle_time_seconds: float
-    is_good_piece: bool = True
+    is_good_piece: Optional[bool] = None
+    quality_observed: bool = False
     total_parts: int = 1
     defect_reason: Optional[str] = None
 
@@ -392,24 +395,24 @@ class StationMetric(BaseModel):
     station_id: str
     name: str
     current_status: StationStatus
-    productive_ratio: float
-    waiting_ratio: float
-    idle_ratio: float
-    stopped_ratio: float
-    parts_produced: int
+    productive_ratio: Optional[float] = None
+    waiting_ratio: Optional[float] = None
+    idle_ratio: Optional[float] = None
+    stopped_ratio: Optional[float] = None
+    parts_produced: Optional[int] = None
     target_parts: int
-    availability_ratio: float
-    partial_oee_note: str
+    availability_ratio: Optional[float] = None
+    partial_oee_note: str = "No disponible: requiere telemetría y tiempos de proceso medidos."
 
 class MetricsSummaryResponse(BaseModel):
     time_window_start: datetime
     time_window_end: datetime
-    shift_name: str = "Turno 1 - Matutino"
-    time_universe: TimeUniverseMetrics
+    shift_name: Optional[str] = None
+    time_universe: Optional[TimeUniverseMetrics] = None
     stations: List[StationMetric]
-    zones: List[ZoneDwellMetric]
-    distances: List[DistanceMetric]
-    total_active_tracks: int
+    zones: Optional[List[ZoneDwellMetric]] = None
+    distances: Optional[List[DistanceMetric]] = None
+    total_active_tracks: Optional[int] = None
     total_open_stops: int
     total_active_alerts: int
     online_devices_count: int

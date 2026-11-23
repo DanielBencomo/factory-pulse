@@ -84,6 +84,7 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
   const [zoneLog, setZoneLog] = useState<ZoneLogEntry[]>([]);
   const [scope, setScope] = useState<Scope>({ kind: 'plant' });
 
+  const scaleConfirmed = floorPlan?.calibration.is_calibrated === true;
   const mPerX = floorPlan?.width_meters ?? 40;
   const mPerY = floorPlan?.height_meters ?? 25;
   const planH = planHeight(mPerX, mPerY);
@@ -302,7 +303,7 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
 
   /* ── datos derivados ── */
   const metricFor = (st?: Station) => (st ? stationMetrics.find((m) => m.station_id === st.station_id) : undefined);
-  const statusFor = (st: Station) => metricFor(st)?.current_status ?? st.current_status;
+  const statusFor = (st: Station) => metricFor(st)?.current_status ?? 'unknown';
   const privateZones = zones.filter((z) => z.is_aggregated_only);
   const isPrivate = (x: number, y: number) => privateZones.some((z) => pointInPolygon(x, y, z.polygon));
   const visibleTrack = (id: string) => selectedTrack === 'all' || selectedTrack === id;
@@ -639,9 +640,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                       <text x={11} y={31} fontSize={9.5} fontFamily={FONT_SANS} fill={s.color}>
                         {s.label}
                       </text>
-                      <text x={84} y={31} fontSize={9.5} fontFamily={FONT_MONO} fill={C.ink3} textAnchor="end">
-                        {st.parts_produced_shift} pz
-                      </text>
                     </g>
                   );
                 })}
@@ -718,6 +716,7 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 area={areas[scopeLine.id]}
                 stationZones={lineStationZones(scopeLine.id)}
                 stats={scopeStats}
+                scaleConfirmed={scaleConfirmed}
                 windowed={windowed}
                 minutes={spaghettiMin}
                 tracks={tracks}
@@ -732,6 +731,7 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 items={scopeItems}
                 devices={devices}
                 insideIds={insideScope}
+                scaleConfirmed={scaleConfirmed}
                 tracks={tracks}
                 log={zoneLog}
                 stops={stops}
@@ -741,7 +741,7 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                   !scopeZone.is_aggregated_only && (
                     <div className="px-4 pt-3 pb-1 border-b border-line">
                       <div className="eyebrow">Spaghetti en esta zona · {spaghettiMin} min</div>
-                      <TrackStatsTable rows={scopeStats} tracks={tracks} empty="Nadie ha pasado por aquí en la ventana." />
+                      <TrackStatsTable rows={scopeStats} tracks={tracks} scaleConfirmed={scaleConfirmed} empty="Sin recorridos observados en la ventana." />
                     </div>
                   )
                 }
@@ -771,7 +771,8 @@ const TrackStatsTable: React.FC<{
   rows: { id: string; meters: number; seconds: number; entries: number }[];
   tracks: Record<string, Track>;
   empty: string;
-}> = ({ rows, tracks, empty }) =>
+  scaleConfirmed: boolean;
+}> = ({ rows, tracks, empty, scaleConfirmed }) =>
   rows.length === 0 ? (
     <p className="text-[12px] text-ink-3 py-2">{empty}</p>
   ) : (
@@ -779,7 +780,7 @@ const TrackStatsTable: React.FC<{
       <thead>
         <tr className="text-left text-ink-3 border-b border-line">
           <th className="font-normal pb-1">Track</th>
-          <th className="font-normal pb-1 text-right">Distancia</th>
+          <th className="font-normal pb-1 text-right">Distancia est.</th>
           <th className="font-normal pb-1 text-right">Tiempo</th>
           <th className="font-normal pb-1 text-right">Entradas</th>
         </tr>
@@ -793,7 +794,7 @@ const TrackStatsTable: React.FC<{
                 {r.id}
               </span>
             </td>
-            <td className="py-1 text-right num">{r.meters.toFixed(1)} m</td>
+            <td className="py-1 text-right num">{scaleConfirmed ? `${r.meters.toFixed(1)} m` : '—'}</td>
             <td className="py-1 text-right num text-ink-2">{fmtMin(r.seconds)}</td>
             <td className="py-1 text-right num text-ink-2">{r.entries}</td>
           </tr>
@@ -807,12 +808,13 @@ const LineReadout: React.FC<{
   area: Poly;
   stationZones: { z: PolygonZone; st?: Station }[];
   stats: { id: string; meters: number; seconds: number; entries: number }[];
+  scaleConfirmed: boolean;
   windowed: Record<string, TrackPoint[]>;
   minutes: number;
   tracks: Record<string, Track>;
   mPerX: number;
   mPerY: number;
-}> = ({ line, area, stationZones, stats, windowed, minutes, tracks, mPerX, mPerY }) => {
+}> = ({ line, area, stationZones, stats, scaleConfirmed, windowed, minutes, tracks, mPerX, mPerY }) => {
   const b = bbox(area);
   const zonesOnly = stationZones.map((x) => x.z);
 
@@ -840,7 +842,7 @@ const LineReadout: React.FC<{
 
       <div className="px-4 pt-3 border-b border-line">
         <div className="eyebrow">Recorrido dentro de la línea · {minutes} min</div>
-        <TrackStatsTable rows={stats} tracks={tracks} empty="Sin trayectorias dentro del área en esta ventana." />
+        <TrackStatsTable rows={stats} tracks={tracks} scaleConfirmed={scaleConfirmed} empty="Sin trayectorias dentro del área en esta ventana." />
       </div>
 
       <div className="px-4 pt-3 pb-3 border-b border-line">

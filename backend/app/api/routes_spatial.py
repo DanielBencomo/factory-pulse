@@ -5,10 +5,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.calculations.analytics import point_in_polygon
+from app.calculations.evidence import count_value, floor_position, zone_counts
 from app.calculations.spatial import build_spatial_insights, compute_spatial_summary
 from app.database import get_db
 from app.models.db_models import DBEvent, DBFloorPlan, DBLine, DBPolygonZone, DBStation
@@ -109,16 +110,8 @@ async def _build_spatial_response(
     height_m = floor_plan.height_meters if floor_plan else 25.0
     zones, scope_poly, scope_label, use_total = await _scope_context(session, scope, scope_id)
 
-    latest = (
-        await session.execute(
-            select(func.max(DBEvent.occurred_at)).where(
-                DBEvent.mode == active_mode,
-                DBEvent.type.in_(SPATIAL_TYPES),
-            )
-        )
-    ).scalar()
     now = datetime.utcnow()
-    end = max(now, latest) if latest is not None else now
+    end = now
     start = end - timedelta(minutes=minutes)
     lead = timedelta(seconds=15)
     rows = (
@@ -135,35 +128,29 @@ async def _build_spatial_response(
     ).all()
 
     positions: Dict[str, List[Tuple[float, float, float, Optional[float]]]] = defaultdict(list)
-    occupancy: Dict[str, List[Tuple[float, int, Dict[str, int]]]] = defaultdict(list)
+    occupancy: Dict[Tuple[str, str], List[Tuple[float, Optional[int], Dict[str, int]]]] = defaultdict(list)
     devices = set()
     for occurred_at, event_type, payload, device_id in rows:
         payload = payload or {}
         device = str(device_id or payload.get("source") or "unknown")
-        devices.add(device)
         timestamp = _epoch(occurred_at)
-        if event_type == "position" and payload.get("track_id") and "x" in payload and "y" in payload:
-            speed = payload.get("speed_m_s")
-            try:
-                parsed_speed = float(speed) if speed is not None else None
-            except (TypeError, ValueError):
-                parsed_speed = None
-            positions[str(payload["track_id"])].append((
-                timestamp, float(payload["x"]), float(payload["y"]), parsed_speed,
-            ))
+        if event_type == "position":
+            position = floor_position(payload)
+            if position:
+                track, x, y = position
+                devices.add(device)
+                positions[track].append((timestamp, x, y, None))
         elif event_type == "zone_occupancy":
-            if isinstance(payload.get("counts"), dict):
-                counts = {
-                    str(zone_id): max(0, int(count))
-                    for zone_id, count in payload["counts"].items()
-                    if isinstance(count, (int, float))
-                }
-                occupancy[device].append((timestamp, max(0, int(payload.get("count", sum(counts.values())))), counts))
-            elif payload.get("zone_id"):
-                zone_id = str(payload["zone_id"])
-                count = max(0, int(payload.get("count", 0)))
-                occupancy[f"{device}:{zone_id}"].append((timestamp, count, {zone_id: count}))
+            scope_key = payload.get("zone_id")
+            count = count_value(payload.get("count"))
+            if not isinstance(scope_key, str) or count is None:
+                continue
+            counts = zone_counts(payload)
+            if scope_key == "__plant__" or counts:
+                devices.add(device)
+                occupancy[(device, scope_key)].append((timestamp, count if scope_key == "__plant__" else None, counts))
 
+    calibrated = bool(floor_plan and (floor_plan.calibration or {}).get('is_calibrated'))
     result = compute_spatial_summary(
         t0=_epoch(start),
         t1=_epoch(end),
@@ -174,9 +161,10 @@ async def _build_spatial_response(
         height_m=height_m,
         scope_poly=scope_poly,
         use_occupancy_total=use_total,
+        calibrated=calibrated,
     )
     result["summary"]["source_count"] = len(devices)
-    result["summary"]["calibrated"] = bool((floor_plan.calibration or {}).get("is_calibrated")) if floor_plan else False
+    result["summary"]["calibrated"] = calibrated
     insights = build_spatial_insights(result)
     return {
         "mode": active_mode,
@@ -197,7 +185,7 @@ async def _build_spatial_response(
             "occupancy_max_age_s": 12,
             "stationary_threshold_m_s": 0.15,
             "privacy": "Sin reconocimiento facial; zonas sensibles sólo agregadas; la respuesta no contiene track IDs.",
-            "interpretation": "Quietud y permanencia son observaciones; no equivalen por sí solas a improductividad.",
+            "interpretation": "Cobertura temporal de señales, no cobertura física. Conteos de detecciones sin deduplicar entre cámaras; quietud no equivale a improductividad.",
         },
     }
 

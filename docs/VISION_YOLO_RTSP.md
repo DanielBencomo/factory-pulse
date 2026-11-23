@@ -125,9 +125,8 @@ Después escriba `calib-planta.json` en **Archivo de calibración** al registrar
 editar esa cámara. El backend lo pasa únicamente al proveedor correspondiente.
 
 El proveedor consulta `/api/zones`. Con una calibración válida proyecta los
-polígonos editados en el dashboard sobre el video. Sin calibración, todavía hay
-detección y tracking, pero X/Y representan la imagen normalizada y no deben
-interpretarse como metros del piso.
+polígonos editados en el dashboard sobre el video. Sin calibración, sólo se
+publican detecciones en imagen, no coordenadas de piso ni conteos por zona.
 
 ### Dibujar departamentos sobre una captura
 

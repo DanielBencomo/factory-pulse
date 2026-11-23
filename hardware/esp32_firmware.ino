@@ -214,7 +214,7 @@ void loop() {
   if (pressed(PIN_BTN_PIECE)) {
     float cycle = (millis() - lastPieceAt) / 1000.0;
     lastPieceAt = millis();
-    postEvent("cycle", "pza", "\"cycle_time_seconds\":" + String(cycle, 1) + ",\"is_good_piece\":true,\"total_parts\":1,\"source\":\"button\"");
+    postEvent("cycle", "pza", "\"cycle_time_seconds\":" + String(cycle, 1) + ",\"total_parts\":1,\"source\":\"button\"");
   }
 #endif
 
@@ -234,7 +234,7 @@ void loop() {
     float cycle = (millis() - lastCycleAt) / 1000.0 / pulses;
     lastCycleAt = millis();
     for (unsigned long i = 0; i < pulses; i++) {
-      postEvent("cycle", "cyc", "\"cycle_time_seconds\":" + String(cycle, 1) + ",\"is_good_piece\":true,\"total_parts\":1");
+      postEvent("cycle", "cyc", "\"cycle_time_seconds\":" + String(cycle, 1) + ",\"total_parts\":1");
     }
   }
 #endif

@@ -1,6 +1,6 @@
 import uuid
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.models.db_models import DBPolygonZone, DBAuditLog, DBEvent, DBFloorPlan, DBLine, DBStation
-from app.calculations.analytics import point_in_polygon
+from app.calculations.evidence import count_value, floor_position, zone_counts
 from app.ws.manager import ws_manager
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -93,7 +93,7 @@ async def create_zone(zone_in: PolygonZoneCreate, session: AsyncSession = Depend
 
 @router.get("/zones/occupancy/live")
 async def live_zone_occupancy(
-    max_age_seconds: int = Query(15, ge=3, le=120),
+    max_age_seconds: int = Query(12, ge=3, le=120),
     session: AsyncSession = Depends(get_db),
 ):
     """Conteo actual por área; nunca devuelve track_id en zonas privadas."""
@@ -106,75 +106,60 @@ async def live_zone_occupancy(
             .where(
                 DBEvent.mode == "live",
                 DBEvent.occurred_at >= since,
+                DBEvent.occurred_at <= now,
                 DBEvent.type.in_(["position", "zone_occupancy"]),
             )
             .order_by(DBEvent.occurred_at)
         )
     ).all()
 
-    tracks: Dict[str, tuple[datetime, float, float]] = {}
-    bundles: Dict[str, tuple[datetime, Dict[str, Any]]] = {}
-    legacy: Dict[tuple[str, str], tuple[datetime, Dict[str, Any]]] = {}
+    tracks: set[str] = set()
+    snapshots: Dict[tuple[str, str], tuple[datetime, Dict[str, Any]]] = {}
     for at, event_type, payload, device_id in rows:
         payload = payload or {}
-        device = device_id or "unknown"
-        if event_type == "position" and payload.get("track_id"):
-            tracks[str(payload["track_id"])] = (
-                at, float(payload.get("x", 0)), float(payload.get("y", 0))
-            )
-        elif event_type == "zone_occupancy":
-            if isinstance(payload.get("counts"), dict):
-                bundles[device] = (at, payload)
-            elif payload.get("zone_id"):
-                legacy[(device, str(payload["zone_id"]))] = (at, payload)
+        if event_type == "position":
+            position = floor_position(payload)
+            if position:
+                tracks.add(position[0])
+        elif isinstance(payload.get("zone_id"), str) and count_value(payload.get("count")) is not None:
+            snapshots[(device_id or "unknown", payload["zone_id"])] = (at, payload)
 
-    aggregate_counts: Counter[str] = Counter()
-    aggregate_total = 0
-    for _at, payload in bundles.values():
-        aggregate_total += max(0, int(payload.get("count", 0)))
-        for zone_id, count in payload.get("counts", {}).items():
-            aggregate_counts[str(zone_id)] += max(0, int(count))
-    bundled_devices = set(bundles)
-    for (device, zone_id), (_at, payload) in legacy.items():
-        if device in bundled_devices:
-            continue
-        count = max(0, int(payload.get("count", 0)))
-        aggregate_counts[zone_id] += count
-        aggregate_total += count
+    counts: Counter[str] = Counter()
+    sources: Counter[str] = Counter()
+    zone_by_source: Dict[tuple[str, str], tuple[datetime, int]] = {}
+    totals = []
+    for (source, scope), (at, payload) in snapshots.items():
+        if scope == "__plant__":
+            totals.append((at, payload["count"]))
+        for zone, count in zone_counts(payload).items():
+            key = (source, zone)
+            if key not in zone_by_source or at >= zone_by_source[key][0]:
+                zone_by_source[key] = (at, count)
+    for (_, zone), (_, count) in zone_by_source.items():
+        counts[zone] += count
+        sources[zone] += 1
 
-    aggregate_available = bool(bundles or legacy)
-    tracked_counts: Counter[str] = Counter()
-    for _track_id, (_at, x, y) in tracks.items():
-        zone = next((z for z in zones if point_in_polygon(x, y, z.polygon)), None)
-        if zone:
-            tracked_counts[zone.zone_id] += 1
-
-    result = []
-    for zone in zones:
-        count = aggregate_counts[zone.zone_id] if aggregate_available else tracked_counts[zone.zone_id]
-        result.append({
-            "zone_id": zone.zone_id,
-            "name": zone.name,
-            "type": zone.type,
-            "line_id": zone.line_id,
-            "count": count,
-            "max_capacity": zone.max_capacity,
-            "is_aggregated_only": bool(zone.is_aggregated_only),
-            "privacy": "aggregate_only" if zone.is_aggregated_only else "anonymous_tracks",
-            "source": "vision_aggregate" if aggregate_available else "tracks",
-        })
-
-    tracked_total = len(tracks)
-    total = aggregate_total if aggregate_available else tracked_total
-    assigned = sum(item["count"] for item in result)
+    last_seen = max((at for at, _ in snapshots.values()), default=None)
     return {
         "mode": "live",
-        "at": now.isoformat(),
+        "at": now.replace(tzinfo=timezone.utc).isoformat(),
+        "observed_at": last_seen.replace(tzinfo=timezone.utc).isoformat() if last_seen else None,
         "max_age_seconds": max_age_seconds,
-        "total_people": total,
-        "tracked_people": tracked_total,
-        "unassigned": max(0, total - assigned),
-        "zones": result,
+        "total_people": sum(count for _, count in totals) if totals else None,
+        "camera_source_count": len(totals),
+        "tracked_people": len(tracks) if tracks else None,
+        "zones": [{
+            "zone_id": z.zone_id,
+            "name": z.name,
+            "type": z.type,
+            "line_id": z.line_id,
+            "count": counts.get(z.zone_id),
+            "source_count": sources[z.zone_id],
+            "max_capacity": z.max_capacity,
+            "is_aggregated_only": bool(z.is_aggregated_only),
+            "privacy": "aggregate_only" if z.is_aggregated_only else "anonymous_tracks",
+            "source": "vision_aggregate" if z.zone_id in counts else None,
+        } for z in zones],
     }
 
 

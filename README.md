@@ -75,4 +75,5 @@ esa IP en el firmware. No expongas la API ni los streams a Internet.
 
 Más detalles: [visión RTSP](docs/VISION_YOLO_RTSP.md),
 [despliegue en Windows](docs/PROMPT_DESPLIEGUE_PC.md) y
-[hardware](docs/HARDWARE.md) y [línea base técnica](docs/LINEA_BASE_TECNICA.md).
+[hardware](docs/HARDWARE.md) y [línea base técnica](docs/LINEA_BASE_TECNICA.md) y
+[contrato de evidencia de las métricas](docs/CONFIANZA_DATOS.md).

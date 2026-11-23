@@ -48,20 +48,20 @@ export const KpiStrip: React.FC<{ analytics: Analytics | null }> = ({ analytics:
   const s = a?.summary;
   const noTime = s && s.available_s < 60; // todo fue paro o sin datos
   const noProcess = s && (!s.has_process_data || noTime);
-  const noPos = s && (!s.has_position_data || noTime);
-  const pct = (k: 'productivo' | 'espera' | 'ausencia') => (s ? s.pct_of_available[k] : 0);
-  const outPct = s && s.line_output_target > 0 ? Math.round((100 * s.line_output) / s.line_output_target) : null;
+  const noPresence = s && (!s.has_presence_data || noTime);
+  const pct = (k: 'productivo' | 'espera' | 'ausencia') => s?.pct_of_available[k] ?? null;
+  const outPct = s?.line_output != null && s.line_output_target != null && s.line_output_target > 0 ? Math.round((100 * s.line_output) / s.line_output_target) : null;
 
   // Diferencia contra la ventana anterior del mismo largo (antes / después de una acción de mejora).
   const p = a?.previous_summary;
   const prevOk = !!p && p.available_s >= 60;
-  const delta = (cur: number | undefined, prev: number | undefined, unit: string, higherIsBetter: boolean | null) =>
-    cur === undefined || prev === undefined ? undefined : { d: cur - prev, unit, higherIsBetter };
+  const delta = (cur: number | null | undefined, prev: number | null | undefined, unit: string, higherIsBetter: boolean | null) =>
+    cur == null || prev == null ? undefined : { d: cur - prev, unit, higherIsBetter };
   const deltas: Record<string, ReturnType<typeof delta>> = prevOk && s && !noTime
     ? {
-        Productivo: s.has_process_data ? delta(s.pct_of_available.productivo, p!.pct_of_available.productivo, 'pp', true) : undefined,
-        Espera: s.has_process_data ? delta(s.pct_of_available.espera, p!.pct_of_available.espera, 'pp', false) : undefined,
-        Ausencia: delta(s.pct_of_available.ausencia, p!.pct_of_available.ausencia, 'pp', false),
+        Productivo: s.has_process_data && p!.has_process_data ? delta(s.pct_of_available.productivo, p!.pct_of_available.productivo, 'pp', true) : undefined,
+        Espera: s.has_process_data && p!.has_process_data ? delta(s.pct_of_available.espera, p!.pct_of_available.espera, 'pp', false) : undefined,
+        Ausencia: s.has_presence_data && p!.has_presence_data ? delta(s.pct_of_available.ausencia, p!.pct_of_available.ausencia, 'pp', false) : undefined,
         'Paros justificados': delta(s.stops_minutes, p!.stops_minutes, 'min', null),
         'Salida de la línea': delta(s.line_output, p!.line_output, 'pzs', true),
         'Caminado en la línea': delta(s.distance_m, p!.distance_m, 'm', false),
@@ -71,7 +71,7 @@ export const KpiStrip: React.FC<{ analytics: Analytics | null }> = ({ analytics:
   const items: { label: string; value: string; unit: string; detail: string; tone?: string }[] = [
     {
       label: 'Productivo',
-      value: !s || noProcess ? '—' : pct('productivo').toFixed(0),
+      value: !s || noProcess ? '—' : (pct('productivo')?.toFixed(0) ?? '—'),
       unit: noProcess ? '' : '%',
       detail: noTime
         ? 'Sin tiempo disponible: todo fue paro o sin datos'
@@ -82,32 +82,33 @@ export const KpiStrip: React.FC<{ analytics: Analytics | null }> = ({ analytics:
     },
     {
       label: 'Espera',
-      value: !s || noProcess ? '—' : pct('espera').toFixed(0),
+      value: !s || noProcess ? '—' : (pct('espera')?.toFixed(0) ?? '—'),
       unit: noProcess ? '' : '%',
       detail: 'operador presente, máquina sin marcha',
-      tone: s && pct('espera') > 15 ? C.warn : undefined,
+      tone: (pct('espera') ?? 0) > 15 ? C.warn : undefined,
     },
     {
       label: 'Ausencia',
-      value: !s || noPos ? '—' : pct('ausencia').toFixed(0),
-      unit: noPos ? '' : '%',
-      detail: noPos ? 'Sin datos de la cámara' : 'estación sin nadie dentro',
+      value: !s || noPresence ? '—' : (pct('ausencia')?.toFixed(0) ?? '—'),
+      unit: noPresence ? '' : '%',
+      detail: noPresence ? 'sin señal local suficiente' : 'tiempo con ausencia reportada por sensor local',
     },
     { label: 'Paros justificados', value: s ? s.stops_minutes.toFixed(0) : '—', unit: 'min', detail: 'fuera del cálculo de espera' },
     {
       label: 'Salida de la línea',
-      value: s ? String(s.line_output) : '—',
+      value: s?.line_output == null ? '—' : String(s.line_output),
       unit: 'pzs',
-      detail: outPct !== null ? `${outPct}% de la meta (${s!.line_output_target.toFixed(0)})` : 'última estación del flujo',
+      detail: outPct !== null ? `${outPct}% de la meta (${s!.line_output_target?.toFixed(0)}) · piezas reportadas` : 'requiere pulsos en la última estación',
       tone: outPct !== null && outPct < 85 ? C.warn : undefined,
     },
-    { label: 'Caminado en la línea', value: s ? s.distance_m.toFixed(0) : '—', unit: 'm', detail: 'suma de todos los tracks' },
+    { label: 'Caminado en la línea', value: s?.distance_m?.toFixed(0) ?? '—', unit: 'm', detail: 'estimación de recorridos con piso calibrado' },
   ];
 
   return (
     <section className="panel" aria-label="Indicadores">
       <div className="px-5 pt-3 flex items-baseline justify-between">
-        <span className="eyebrow">Últimos {fmtWindow(a) || '…'} · reconstruido desde eventos</span>
+        <span className="eyebrow">Últimos {fmtWindow(a) || '…'} · estimado a partir de eventos</span>
+        {s && <span className="text-[11.5px] text-ink-3">Cobertura de estado: {s.coverage_pct}%</span>}
         {a?.mode === 'live' && <span className="chip chip-info">en vivo</span>}
       </div>
       <div className="overflow-hidden">
@@ -189,7 +190,7 @@ export const StationTablePanel: React.FC<{ analytics: Analytics | null; metrics:
                   <tr key={r.station_id} className="border-b border-line last:border-0">
                     <td className="py-2 pr-2 leading-tight">
                       {r.order} · {shortStationName(r.name)}
-                      {r.station_id === bottleneck && <span className="chip chip-accent ml-1.5 !h-[17px]">cuello</span>}
+                      {r.station_id === bottleneck && <span className="chip chip-accent ml-1.5 !h-[17px]">menor ritmo observado</span>}
                     </td>
                     <td className="py-2 pr-2">
                       <span className="flex items-center gap-1.5 text-ink-2">
@@ -201,13 +202,13 @@ export const StationTablePanel: React.FC<{ analytics: Analytics | null; metrics:
                       <StateBar seconds={r.seconds} />
                     </td>
                     <td className="py-2 text-right num text-ink-2">
-                      {r.has_process_data ? (
+                      {r.pieces_per_hour != null ? (
                         <>
                           {r.pieces_per_hour.toFixed(0)}
                           <span className="text-ink-4">/{r.target_pph}</span>
                         </>
                       ) : (
-                        <span className="text-ink-4" title="Sin sensor de proceso">—</span>
+                        <span className="text-ink-4" title="Sin pulsos de piezas en la ventana">—</span>
                       )}
                     </td>
                   </tr>

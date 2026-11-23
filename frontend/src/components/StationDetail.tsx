@@ -393,6 +393,7 @@ export const ZoneReadout: React.FC<{
   items: InteriorItem[];
   devices: Device[];
   insideIds: string[];
+  scaleConfirmed: boolean;
   tracks: Record<string, Track>;
   log: ZoneLogEntry[];
   stops: Stop[];
@@ -400,7 +401,7 @@ export const ZoneReadout: React.FC<{
   mPerY: number;
   spaghetti?: React.ReactNode;
   onEditInterior?: () => void;
-}> = ({ zone, station, stationMetric, items, devices, insideIds, tracks, log, stops, mPerX, mPerY, spaghetti, onEditInterior }) => {
+}> = ({ zone, station, stationMetric, items, devices, insideIds, scaleConfirmed, tracks, log, stops, mPerX, mPerY, spaghetti, onEditInterior }) => {
   const b = bboxOf(zone);
   const now = Date.now();
 
@@ -426,7 +427,7 @@ export const ZoneReadout: React.FC<{
   const realPir = signals?.pir && ageS(signals.pir.at) <= 60 ? signals.pir : null;
   const realCycles = signals?.process.cycles_last_hour ?? 0;
   const zoneLog = log.filter((e) => e.zoneId === zone.id);
-  const st = statusOf(stationMetric?.current_status ?? station?.current_status);
+  const st = statusOf(stationMetric?.current_status);
   const openStops = stops.filter(
     (s) => s.status === 'open' && (s.scope_id === station?.station_id || s.scope_id === station?.line_id || s.scope_id === zone.id || s.scope_type === 'plant'),
   );
@@ -461,7 +462,7 @@ export const ZoneReadout: React.FC<{
         <div className="eyebrow">Zona privada</div>
         <h3 className="text-[15px] font-semibold mt-1">{zone.name}</h3>
         <dl className="mt-3">
-          <div className="kv"><dt>Personas ahora</dt><dd className="num">{insideIds.length}</dd></div>
+          <div className="kv"><dt>Personas ahora</dt><dd className="num">Consulta Personas por área</dd></div>
           <div className="kv"><dt>Tratamiento</dt><dd>Solo conteo agregado</dd></div>
         </dl>
         <p className="mt-3 text-ink-3 leading-snug">
@@ -499,7 +500,7 @@ export const ZoneReadout: React.FC<{
     ),
     camera:
       insideIds.length === 0 ? (
-        <span className="text-ink-3">Nadie dentro del área</span>
+        <span className="text-ink-3">Sin tracks recientes en el área</span>
       ) : (
         <ul className="space-y-0.5">
           {insideIds.map((id) => {
@@ -510,7 +511,7 @@ export const ZoneReadout: React.FC<{
                 <span className="dot" style={{ background: trackColor(id) }} />
                 <span>{id}</span>
                 <span className="text-ink-3">
-                  x {((t.x - b.x0) * mPerX).toFixed(1)} · y {((t.y - b.y0) * mPerY).toFixed(1)} m
+                  {scaleConfirmed ? `x ${((t.x - b.x0) * mPerX).toFixed(1)} · y ${((t.y - b.y0) * mPerY).toFixed(1)} m (est.)` : 'sin escala validada'}
                 </span>
                 {since && <span className="ml-auto text-ink-3">{Math.round((now - since) / 1000)} s</span>}
               </li>
@@ -536,7 +537,7 @@ export const ZoneReadout: React.FC<{
       </span>
     ) : station ? (
       <span className="num text-[12px]">
-        {station.parts_produced_shift} pzs · meta {station.target_pieces_per_hour}/h · ciclo ideal {station.ideal_cycle_seconds}s
+        Sin piezas reportadas en la última hora · meta {station.target_pieces_per_hour}/h · ciclo ideal {station.ideal_cycle_seconds}s
       </span>
     ) : null,
   };

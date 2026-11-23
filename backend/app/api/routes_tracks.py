@@ -1,16 +1,16 @@
 """
 Historial de trayectorias por track, para dibujar spaghetti por línea o estación.
 
-La ventana se mide contra el evento de posición más reciente (no contra el reloj
-del servidor): así funciona igual con datos en vivo, reproducidos o simulados.
+La ventana se mide contra el reloj del servidor y exige posiciones de piso.
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from app.database import get_db
+from app.calculations.evidence import floor_position
 from app.models.db_models import DBEvent, DBFloorPlan
 
 router = APIRouter()
@@ -26,10 +26,8 @@ async def track_history(
     session: AsyncSession = Depends(get_db),
 ) -> Dict[str, List[List[float]]]:
     mode = "live"
-    latest = (await session.execute(select(func.max(DBEvent.occurred_at)).where(DBEvent.type == "position", DBEvent.mode == mode))).scalar()
-    if latest is None:
-        return {}
-    since = latest - timedelta(minutes=minutes)
+    now = datetime.utcnow()
+    since = now - timedelta(minutes=minutes)
     # Si la nave cambió de medidas, lo anterior está en otro marco de coordenadas.
     fp = (await session.execute(select(DBFloorPlan))).scalars().first()
     frame_since = (fp.calibration or {}).get("frame_since") if fp else None
@@ -37,21 +35,22 @@ async def track_history(
         since = max(since, datetime.fromisoformat(frame_since) + timedelta(microseconds=1))
     res = await session.execute(
         select(DBEvent.occurred_at, DBEvent.payload)
-        .where(DBEvent.type == "position", DBEvent.occurred_at >= since, DBEvent.mode == mode)
+        .where(DBEvent.type == "position", DBEvent.occurred_at >= since, DBEvent.occurred_at <= now, DBEvent.mode == mode)
         .order_by(DBEvent.occurred_at)
     )
 
     out: Dict[str, List[List[float]]] = {}
     for occurred_at, p in res.all():
-        trk = p.get("track_id")
-        if not trk or "x" not in p or "y" not in p:
+        position = floor_position(p or {})
+        if position is None:
             continue
+        trk, x, y = position
         ts = round(occurred_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
         pts = out.setdefault(trk, [])
         if pts:
             lx, ly, lt = pts[-1]
-            if abs(p["x"] - lx) < MIN_STEP and abs(p["y"] - ly) < MIN_STEP and (ts - lt) < MAX_GAP_SECONDS * 1000:
+            if abs(x - lx) < MIN_STEP and abs(y - ly) < MIN_STEP and (ts - lt) < MAX_GAP_SECONDS * 1000:
                 continue
-        pts.append([round(p["x"], 4), round(p["y"], 4), ts])
+        pts.append([round(x, 4), round(y, 4), ts])
 
     return {k: v[-max_points:] for k, v in out.items()}

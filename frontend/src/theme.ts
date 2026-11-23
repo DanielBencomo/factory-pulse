@@ -87,10 +87,10 @@ export const axisValue = {
 // Estados reconstruidos por la analítica (misma paleta en KPIs, tablas y gráficas).
 export const STATE_META: Record<AnalyticsState, { label: string; short: string; color: string; help: string }> = {
   productivo: { label: 'Productivo', short: 'Prod.', color: C.ok, help: 'Hay operador y la máquina reporta marcha o ciclo reciente' },
-  espera: { label: 'Espera', short: 'Esp.', color: C.warn, help: 'Hay operador, hay sensor de proceso y no hay marcha ni ciclo' },
-  presente: { label: 'Presente sin dato de proceso', short: 'Pres.', color: C.info, help: 'Hay operador pero la estación no tiene sensor de proceso' },
-  ausencia: { label: 'Ausencia', short: 'Aus.', color: C.plum, help: 'Ningún track de la cámara dentro de la estación' },
+  espera: { label: 'Espera', short: 'Esp.', color: C.warn, help: 'Hay presencia y la máquina reporta un estado vigente sin marcha' },
+  presente: { label: 'Presente sin dato de proceso', short: 'Pres.', color: C.info, help: 'Hay presencia, pero falta señal reciente de proceso' },
+  ausencia: { label: 'Ausencia', short: 'Aus.', color: C.plum, help: 'El sensor local reporta ausencia y no hay evidencia positiva' },
   paro: { label: 'Paro justificado', short: 'Paro', color: C.ink2, help: 'Paro autorizado activo; no cuenta como espera' },
-  sin_datos: { label: 'Sin datos', short: 'S/D', color: C.line2, help: 'La cámara no reportó ningún track; no se sabe si había alguien' },
+  sin_datos: { label: 'Sin datos', short: 'S/D', color: C.line2, help: 'No hay evidencia reciente suficiente para clasificar la estación' },
 };
 export const STATE_ORDER: AnalyticsState[] = ['productivo', 'espera', 'presente', 'ausencia', 'paro', 'sin_datos'];

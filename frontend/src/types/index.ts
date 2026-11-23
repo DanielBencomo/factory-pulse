@@ -231,17 +231,18 @@ export interface SpatialZoneMetric {
   type: ZoneType;
   line_id?: string | null;
   current_count: number | null;
-  average_occupancy: number;
+  average_occupancy: number | null;
+  coverage_pct: number;
   peak_occupancy: number;
   person_minutes: number;
-  occupied_pct: number;
+  occupied_pct: number | null;
   stationary_pct: number;
   moving_pct: number;
   unknown_motion_pct: number;
   visits: number | null;
   visits_per_hour: number | null;
-  area_m2: number;
-  peak_density_person_m2: number;
+  area_m2: number | null;
+  peak_density_person_m2: number | null;
   max_capacity?: number | null;
   congested_seconds: number;
   excess_person_minutes: number;
@@ -277,9 +278,9 @@ export interface SpatialSummary {
   generated_at: string;
   summary: {
     current_people: number | null;
-    average_occupancy: number;
-    peak_occupancy: number;
-    observed_person_minutes: number;
+    average_occupancy: number | null;
+    peak_occupancy: number | null;
+    observed_person_minutes: number | null;
     stationary_pct: number;
     moving_pct: number;
     unknown_motion_pct: number;
@@ -288,7 +289,7 @@ export interface SpatialSummary {
     last_observation_age_seconds: number | null;
     top_dwell_zone: { zone_id: string; name: string; person_minutes: number } | null;
     max_congestion: { zone_id: string; name: string; people: number; capacity: number | null; sustained_seconds: number; over_capacity: boolean } | null;
-    distance_m: number;
+    distance_m: number | null;
     distance_per_person_hour_m: number | null;
     total_transitions: number;
     route_concentration_pct: number;
@@ -297,7 +298,7 @@ export interface SpatialSummary {
     zone_utilization_pct: number;
     congestion_excess_person_minutes: number;
     congested_seconds: number;
-    peak_density_person_m2: number;
+    peak_density_person_m2: number | null;
     source_count: number;
     calibrated: boolean;
   };
@@ -353,20 +354,22 @@ export interface ZoneOccupancy {
   name: string;
   type: ZoneType;
   line_id?: string | null;
-  count: number;
+  count: number | null;
+  source_count: number;
   max_capacity?: number | null;
   is_aggregated_only: boolean;
   privacy: 'aggregate_only' | 'anonymous_tracks';
-  source: 'vision_aggregate' | 'tracks';
+  source: 'vision_aggregate' | null;
 }
 
 export interface OccupancySnapshot {
   mode: SystemMode;
   at: string;
   max_age_seconds: number;
-  total_people: number;
-  tracked_people: number;
-  unassigned: number;
+  observed_at: string | null;
+  total_people: number | null;
+  camera_source_count: number;
+  tracked_people: number | null;
   zones: ZoneOccupancy[];
 }
 
@@ -387,9 +390,11 @@ export interface StationAnalytics {
   order: number;
   seconds: Record<AnalyticsState, number>;
   has_process_data: boolean;
-  pieces: number;
+  process_observed_s: number;
+  inspected_pieces: number;
+  pieces: number | null;
   good_pct: number | null;
-  pieces_per_hour: number;
+  pieces_per_hour: number | null;
   available_s: number;
   target_pph: number;
   avg_cycle_s: number | null;
@@ -404,20 +409,22 @@ export interface Analytics {
   summary: {
     seconds: Record<AnalyticsState, number>;
     available_s: number;
-    pct_of_available: Record<Exclude<AnalyticsState, 'paro' | 'sin_datos'>, number>;
+    coverage_pct: number;
+    pct_of_available: Record<Exclude<AnalyticsState, 'paro' | 'sin_datos'>, number | null>;
     stops_minutes: number;
-    line_output: number;
-    line_output_target: number;
+    line_output: number | null;
+    line_output_target: number | null;
     bottleneck_station_id: string | null;
-    distance_m: number;
+    distance_m: number | null;
     has_position_data: boolean;
+    has_presence_data: boolean;
     has_process_data: boolean;
   };
   stations: StationAnalytics[];
   timeline: { station_id: string; segments: [number, number, AnalyticsState][] }[];
   buckets_ms: number[];
-  output_by_bucket: Record<string, number[]>;
-  line_output_by_bucket: number[];
+  output_by_bucket: Record<string, (number | null)[]>;
+  line_output_by_bucket: (number | null)[];
   line_target_per_bucket: number;
   distance_by_bucket: Record<string, number[]>;
   stops_pareto: { reason: string; minutes: number; count: number }[];
@@ -517,25 +524,25 @@ export interface StationMetric {
   station_id: string;
   name: string;
   current_status: StationStatus;
-  productive_ratio: number;
-  waiting_ratio: number;
-  idle_ratio: number;
-  stopped_ratio: number;
-  parts_produced: number;
+  productive_ratio: number | null;
+  waiting_ratio: number | null;
+  idle_ratio: number | null;
+  stopped_ratio: number | null;
+  parts_produced: number | null;
   target_parts: number;
-  availability_ratio: number;
+  availability_ratio: number | null;
   partial_oee_note: string;
 }
 
 export interface MetricsSummary {
   time_window_start: string;
   time_window_end: string;
-  shift_name: string;
-  time_universe: TimeUniverseMetrics;
+  shift_name: string | null;
+  time_universe: TimeUniverseMetrics | null;
   stations: StationMetric[];
-  zones: ZoneDwellMetric[];
-  distances: DistanceMetric[];
-  total_active_tracks: number;
+  zones: ZoneDwellMetric[] | null;
+  distances: DistanceMetric[] | null;
+  total_active_tracks: number | null;
   total_open_stops: number;
   total_active_alerts: number;
   online_devices_count: number;

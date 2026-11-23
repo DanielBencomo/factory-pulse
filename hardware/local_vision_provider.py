@@ -184,6 +184,8 @@ class VideoSource:
         self.cap: Any = None
         self._frame_condition = threading.Condition()
         self._latest_frame: Any = None
+        self._latest_frame_at = ""
+        self.delivered_frame_at = ""
         self._frame_sequence = 0
         self._delivered_sequence = 0
         self._reader_stop = threading.Event()
@@ -257,6 +259,7 @@ class VideoSource:
             if self._latest_frame is None or self._frame_sequence <= self._delivered_sequence:
                 return None
             self._delivered_sequence = self._frame_sequence
+            self.delivered_frame_at = self._latest_frame_at
             return self._latest_frame
 
     def _capture_latest(self) -> None:
@@ -266,9 +269,11 @@ class VideoSource:
             ok, frame = cap.read() if cap is not None else (False, None)
             if ok and frame is not None:
                 attempts = 0
+                decoded_at = datetime.now(timezone.utc).isoformat()
                 latest = self._fit_frame(frame)
                 with self._frame_condition:
                     self._latest_frame = latest
+                    self._latest_frame_at = decoded_at
                     self._frame_sequence += 1
                     self._frame_condition.notify_all()
                 continue
@@ -530,7 +535,7 @@ class EventPublisher:
         self.device_id = device_id
         self.events_url = f"{self.api_base}/api/events/batch"
         self.heartbeat_url = f"{self.api_base}/api/devices/{device_id}/heartbeat"
-        self._queue: queue.Queue[tuple[list[dict[str, Any]], list[dict[str, Any]]] | None] = queue.Queue(maxsize=2)
+        self._queue: queue.Queue[tuple[list[dict[str, Any]], list[dict[str, Any]], str] | None] = queue.Queue(maxsize=2)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="vision-publisher", daemon=True)
         self.last_ok_at: float | None = None
@@ -542,9 +547,10 @@ class EventPublisher:
     def submit(
         self,
         positions: list[dict[str, Any]],
-        occupancies: list[dict[str, Any]] | None = None,
+        occupancies: list[dict[str, Any]],
+        observed_at: str,
     ) -> None:
-        measurements = (positions, occupancies or [])
+        measurements = (positions, occupancies, observed_at)
         if not measurements[0] and not measurements[1]:
             return
         try:
@@ -572,8 +578,8 @@ class EventPublisher:
         session: requests.Session,
         positions: list[dict[str, Any]],
         occupancies: list[dict[str, Any]],
+        occurred_at: str,
     ) -> None:
-        occurred_at = datetime.now(timezone.utc).isoformat()
         batch = []
         for position in positions:
             payload = {
@@ -582,6 +588,7 @@ class EventPublisher:
                 "y": round(float(position["y"]), 5),
                 "confidence": round(float(position["confidence"]), 4),
                 "source": "vision_yolo_bytetrack",
+                "coordinate_space": "floor",
             }
             if position.get("speed_m_s") is not None:
                 payload["speed_m_s"] = round(float(position["speed_m_s"]), 3)
@@ -605,6 +612,7 @@ class EventPublisher:
                 "count": max(0, int(occupancy.get("count", 0))),
                 "aggregated": True,
                 "source": "vision_yolo_bytetrack",
+                "coordinate_space": occupancy["coordinate_space"],
             }
             if isinstance(occupancy.get("counts"), dict):
                 payload["counts"] = {
@@ -650,8 +658,7 @@ class EventPublisher:
                     continue
                 if measurements is None:
                     break
-                positions, occupancies = measurements
-                self._post_measurements(session, positions, occupancies)
+                self._post_measurements(session, *measurements)
                 self.last_ok_at = time.time()
                 if self.last_error:
                     log("conexión con el backend recuperada")
@@ -1326,8 +1333,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         calibration.width_m = args.plant_width
         calibration.height_m = args.plant_height
         log(
-            "sin --calib: se publicarán coordenadas normalizadas de imagen y las zonas "
-            "no se pueden proyectar con precisión sobre la cámara"
+            "sin --calib: se publicará el total de detecciones, sin posiciones ni conteos de piso"
         )
     zone_client = ZoneClient(args.api, args.zone_refresh)
     zones = zone_client.refresh_if_due(force=True)
@@ -1399,7 +1405,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             if now - last_publish_at >= args.publish_interval:
                 positions = []
                 zone_counts: Counter[str] = Counter()
-                for detection in detections:
+                for detection in (detections if calibration.calibrated else []):
                     x, y = detection.floor_x, detection.floor_y
                     if x is None or y is None or not (0 <= x <= 1 and 0 <= y <= 1):
                         continue
@@ -1424,7 +1430,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "zone_id": "__plant__",
                     "count": len(detections),
                     "counts": dict(zone_counts),
-                }])
+                    "coordinate_space": "floor" if calibration.calibrated else "image",
+                }], video.delivered_frame_at)
                 last_publish_at = now
 
             if not args.no_display:

@@ -35,10 +35,10 @@ export const SpatialInsightsPanel: React.FC<Props> = ({ data, error, onRetry, on
   const s = data.summary;
   const visibleZones = data.zones.slice(0, 5);
   const cards = [
-    { label: 'Personas ahora', value: fmt(s.current_people), detail: `pico ${fmt(s.peak_occupancy)}`, icon: Users, color: C.brand },
+    { label: 'Detecciones ahora', value: fmt(s.current_people), detail: `pico ${fmt(s.peak_occupancy)}`, icon: Users, color: C.brand },
     { label: 'Persona·min', value: fmt(s.observed_person_minutes, 1), detail: `promedio ${fmt(s.average_occupancy, 1)}`, icon: Activity, color: C.info },
-    { label: 'Distancia', value: `${fmt(s.distance_m, 0)} m`, detail: s.distance_per_person_hour_m == null ? 'sin base suficiente' : `${fmt(s.distance_per_person_hour_m, 0)} m/persona·h`, icon: Route, color: C.accent },
-    { label: 'Cobertura', value: `${fmt(s.coverage_pct, 0)}%`, detail: s.fresh ? 'dato reciente' : 'dato no reciente', icon: ShieldCheck, color: s.coverage_pct >= 80 ? C.ok : C.warn },
+    { label: 'Distancia estimada', value: s.distance_m == null ? '—' : `${fmt(s.distance_m, 0)} m`, detail: s.distance_per_person_hour_m == null ? 'sin base suficiente' : `${fmt(s.distance_per_person_hour_m, 0)} m/persona·h`, icon: Route, color: C.accent },
+    { label: 'Cobertura temporal', value: `${fmt(s.coverage_pct, 0)}%`, detail: s.fresh ? 'dato reciente' : 'dato no reciente', icon: ShieldCheck, color: s.coverage_pct >= 80 ? C.ok : C.warn },
   ];
 
   return (
@@ -91,7 +91,7 @@ export const SpatialInsightsPanel: React.FC<Props> = ({ data, error, onRetry, on
                     <td className="py-1.5 text-right num">{zone.current_count ?? '—'}</td>
                     <td className="py-1.5 text-right num text-ink-3">{fmt(zone.average_occupancy, 1)}</td>
                     <td className={`py-1.5 text-right num ${over ? 'text-bad font-medium' : 'text-ink-3'}`}>
-                      {zone.peak_occupancy}/{zone.max_capacity ?? '—'}
+                      {zone.coverage_pct > 0 ? zone.peak_occupancy : '—'}/{zone.max_capacity ?? '—'}
                     </td>
                   </tr>
                 );

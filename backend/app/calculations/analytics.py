@@ -4,11 +4,11 @@ Analítica de línea reconstruida a partir de eventos.
 Para cada estación y cada instante de una rejilla regular se decide un estado:
 
   paro        hay un paro justificado que cubre a la estación (línea, estación o planta)
-  ausencia    ningún track de la cámara está dentro de la zona de la estación
+  ausencia    sensor local vigente reporta ausencia y no hay señal positiva
   presente    hay alguien, pero la estación no tiene sensor de proceso: no se sabe si produce
   productivo  hay alguien y la máquina reporta marcha o hubo un ciclo reciente
-  espera      hay alguien, hay sensor de proceso y no hay marcha ni ciclo
-  sin_datos   la cámara no reportó ningún track: no se sabe si hay alguien
+  espera      hay alguien y un estado vigente indica que la máquina no está en marcha
+  sin_datos   no hay evidencia local suficiente de presencia
 
 "Presente" existe a propósito: estar en la estación no prueba que se produzca
 (regla crítica del documento del proyecto), así que sin dato de proceso no se afirma.
@@ -72,11 +72,12 @@ def compute_line_analytics(
     stations: List[Dict[str, Any]],
     positions: Dict[str, List[Tuple[float, float, float]]],
     machine: Dict[str, List[Tuple[float, str]]],
-    cycles: Dict[str, List[Tuple[float, float, bool]]],
+    cycles: Dict[str, List[Tuple[float, Optional[float], Optional[bool], int]]],
     stops: List[Dict[str, Any]],
     line_area: Optional[Poly],
     m_per_x: float,
     m_per_y: float,
+    calibrated: bool = True,
     step_s: Optional[float] = None,
     bucket_s: Optional[int] = None,
     presence: Optional[Dict[str, List[Tuple[float, bool]]]] = None,
@@ -85,7 +86,7 @@ def compute_line_analytics(
     """
     stations: [{station_id, name, order, ideal_cycle, target_pph, polygon}], ordenadas por flujo
     positions: {track_id: [(t, x, y)]} ordenado por t (x, y normalizados)
-    machine: {station_id: [(t, "running"|"idle")]}; cycles: {station_id: [(t, cycle_s, good)]}
+    machine: {station_id: [(t, "running"|"idle")]}; cycles: {station_id: [(t, cycle_s, good, quantity)]}
     stops: [{start, end, authorized, reason, station_ids: set | None}] (None = toda la línea)
     presence: {station_id: [(t, presente)]} de PIR o CSI; complementa a la cámara
     zones: [{zone_id, name, type, polygon, is_aggregated_only}] para el tiempo por zona
@@ -94,16 +95,13 @@ def compute_line_analytics(
     window = max(1.0, t1 - t0)
     step = step_s or max(5.0, window / 720)
     bucket = bucket_s or pick_bucket_seconds(window)
-    n = int(window // step)
+    n = ceil(window / step)
     nb = int(ceil(window / bucket))
 
     track_times = {k: [p[0] for p in v] for k, v in positions.items()}
     mach_times = {k: [m[0] for m in v] for k, v in machine.items()}
     cyc_times = {k: [c[0] for c in v] for k, v in cycles.items()}
     boxes = {s["station_id"]: _bbox(s["polygon"]) for s in stations}
-    has_process = {
-        s["station_id"]: bool(mach_times.get(s["station_id"])) or bool(cyc_times.get(s["station_id"])) for s in stations
-    }
     auth_stops = [st for st in stops if st.get("authorized", True)]
     presence = presence or {}
     pres_times = {k: [p[0] for p in v] for k, v in presence.items()}
@@ -117,8 +115,12 @@ def compute_line_analytics(
     seconds = {s["station_id"]: {k: 0.0 for k in STATES} for s in stations}
     segments: Dict[str, List[List[Any]]] = {s["station_id"]: [] for s in stations}
 
+    has_presence_data = False
     for k in range(n):
-        t = t0 + (k + 0.5) * step
+        interval_start = t0 + k * step
+        interval_end = min(t1, interval_start + step)
+        duration = max(0.0, interval_end - interval_start)
+        t = (interval_start + interval_end) / 2
         # posición vigente de cada track
         live_pts = []
         live_ids = []
@@ -141,9 +143,9 @@ def compute_line_analytics(
                     if not inside_prev.get((trk, zid)):
                         zone_visits[zid] += 1
                 inside_prev[(trk, zid)] = inside
-            zone_person_s[zid] += step * count
+            zone_person_s[zid] += duration * count
             if count:
-                zone_occupied_s[zid] += step
+                zone_occupied_s[zid] += duration
 
         for s in stations:
             sid = s["station_id"]
@@ -154,70 +156,74 @@ def compute_line_analytics(
                 pt = pres_times.get(sid, [])
                 pi = bisect_right(pt, t) - 1
                 pres_known = pi >= 0 and t - pt[pi] <= PRESENCE_MAX_AGE
+                has_presence_data |= pres_known
                 x0, y0, x1, y1 = boxes[sid]
                 in_zone = any(x0 <= x <= x1 and y0 <= y <= y1 and point_in_polygon(x, y, s["polygon"]) for x, y in live_pts)
                 present = in_zone or (pres_known and presence[sid][pi][1])
-                if not live_pts and not pres_known:
-                    # Ni cámara ni sensor de presencia reportando: no es ausencia, es falta de datos.
-                    state = "sin_datos"
-                elif not present:
-                    state = "ausencia"
-                elif not has_process[sid]:
-                    state = "presente"
+                if not present:
+                    state = "ausencia" if pres_known else "sin_datos"
                 else:
-                    running = False
                     mt = mach_times.get(sid, [])
                     i = bisect_right(mt, t) - 1
-                    if i >= 0 and t - mt[i] <= MACHINE_MAX_AGE:
-                        running = machine[sid][i][1] == "running"
-                    if not running:
-                        ct = cyc_times.get(sid, [])
-                        j = bisect_right(ct, t) - 1
-                        running = j >= 0 and t - ct[j] <= max(2 * s["ideal_cycle"], 60.0)
-                    state = "productivo" if running else "espera"
+                    machine_state = machine[sid][i][1] if i >= 0 and t - mt[i] <= MACHINE_MAX_AGE else None
+                    ct = cyc_times.get(sid, [])
+                    j = bisect_right(ct, t) - 1
+                    cycle_recent = j >= 0 and t - ct[j] <= max(2 * s["ideal_cycle"], 60.0)
+                    if machine_state == "running" or (machine_state is None and cycle_recent):
+                        state = "productivo"
+                    elif machine_state in ("idle", "fault", "stopped"):
+                        state = "espera"
+                    else:
+                        state = "presente"
 
-            seconds[sid][state] += step
+            seconds[sid][state] += duration
             seg = segments[sid]
-            start_ms = int((t0 + k * step) * 1000)
-            end_ms = int((t0 + (k + 1) * step) * 1000)
+            start_ms = int(interval_start * 1000)
+            end_ms = int(interval_end * 1000)
             if seg and seg[-1][2] == state and seg[-1][1] == start_ms:
                 seg[-1][1] = end_ms
             else:
                 seg.append([start_ms, end_ms, state])
 
     # Piezas por intervalo
-    hours = window / 3600
-    output_by_bucket: Dict[str, List[int]] = {}
+    output_by_bucket: Dict[str, List[Optional[int]]] = {}
     per_station = []
     for s in stations:
         sid = s["station_id"]
-        counts = [0] * nb
-        cyc = [c for c in cycles.get(sid, []) if t0 <= c[0] <= t1]
-        for c in cyc:
-            counts[min(nb - 1, int((c[0] - t0) // bucket))] += 1
+        counts: List[Optional[int]] = [None] * nb
+        cyc = [c for c in cycles.get(sid, []) if t0 <= c[0] < t1]
+        for at, _cycle, _good, quantity in cyc:
+            idx = min(nb - 1, int((at - t0) // bucket))
+            counts[idx] = (counts[idx] or 0) + quantity
         output_by_bucket[sid] = counts
-        pieces = len(cyc)
-        good = sum(1 for c in cyc if c[2])
-        # El ritmo se mide sobre el tiempo en que la estación pudo producir.
-        available_h = sum(v for k, v in seconds[sid].items() if k not in UNAVAILABLE) / 3600
+        pieces = sum(c[3] for c in cyc)
+        inspected = sum(c[3] for c in cyc if c[2] is not None)
+        good = sum(c[3] for c in cyc if c[2] is True)
+        durations = [c[1] for c in cyc if c[1] is not None]
+        # La tasa cuenta piezas reportadas sobre los intervalos con proceso clasificado.
+        process_s = seconds[sid]["productivo"] + seconds[sid]["espera"]
+        available_s = sum(v for k, v in seconds[sid].items() if k not in UNAVAILABLE)
         per_station.append({
             "station_id": sid,
             "name": s["name"],
             "order": s["order"],
             "seconds": {k: round(v, 1) for k, v in seconds[sid].items()},
-            "has_process_data": has_process[sid],
-            "pieces": pieces,
-            "good_pct": round(100 * good / pieces, 1) if pieces else None,
-            "pieces_per_hour": round(pieces / available_h, 1) if available_h > 0.01 else 0,
-            "available_s": round(available_h * 3600, 1),
+            "has_process_data": process_s > 0,
+            "process_observed_s": round(process_s, 1),
+            "pieces": pieces if cyc else None,
+            "good_pct": round(100 * good / inspected, 1) if inspected else None,
+            "inspected_pieces": inspected,
+            "pieces_per_hour": round(pieces * 3600 / window, 1) if cyc else None,
+            "available_s": round(available_s, 1),
             "target_pph": s["target_pph"],
-            "avg_cycle_s": round(sum(c[1] for c in cyc) / pieces, 1) if pieces else None,
+            "avg_cycle_s": round(sum(durations) / len(durations), 1) if durations else None,
             "ideal_cycle_s": s["ideal_cycle"],
         })
 
     # Distancia caminada dentro del área de la línea
     distance_by_bucket: Dict[str, List[float]] = {}
-    if line_area:
+    distance_measurable = False
+    if line_area and calibrated:
         ax0, ay0, ax1, ay1 = _bbox(line_area)
 
         def inside(x, y):
@@ -230,7 +236,8 @@ def compute_line_analytics(
                 if not (t0 <= p[0] <= t1):
                     prev = p
                     continue
-                if prev and p[0] - prev[0] <= POSITION_MAX_AGE and inside(p[1], p[2]) and inside(prev[1], prev[2]):
+                if prev and t0 <= prev[0] < p[0] and p[0] - prev[0] <= POSITION_MAX_AGE and inside(p[1], p[2]) and inside(prev[1], prev[2]):
+                    distance_measurable = True
                     acc[min(nb - 1, int((p[0] - t0) // bucket))] += hypot((p[1] - prev[1]) * m_per_x, (p[2] - prev[2]) * m_per_y)
                 prev = p
             if any(acc):
@@ -243,7 +250,8 @@ def compute_line_analytics(
         s_, e_ = max(st["start"], t0), min(st["end"], t1)
         if e_ <= s_:
             continue
-        clipped.append((s_, e_))
+        if st.get('authorized', True):
+            clipped.append((s_, e_))
         r = pareto.setdefault(st["reason"], {"minutes": 0.0, "count": 0})
         r["minutes"] += (e_ - s_) / 60
         r["count"] += 1
@@ -256,8 +264,8 @@ def compute_line_analytics(
     available = sum(v for k, v in totals.items() if k not in UNAVAILABLE)
     last = per_station[-1] if per_station else None
     # Solo compite por "cuello de botella" quien tuvo tiempo real para producir.
-    measured = [p for p in per_station if p["has_process_data"] and p["available_s"] >= 60]
-    bottleneck = min(measured, key=lambda p: p["pieces_per_hour"]) if measured else None
+    measured = [p for p in per_station if p["pieces_per_hour"] is not None and p["process_observed_s"] >= 60]
+    bottleneck = min(measured, key=lambda p: p["pieces_per_hour"]) if len(measured) >= 2 else None
 
     return {
         "window": {"start_ms": int(t0 * 1000), "end_ms": int(t1 * 1000), "step_s": step, "bucket_s": bucket},
@@ -265,13 +273,15 @@ def compute_line_analytics(
         "summary": {
             "seconds": {k: round(v, 1) for k, v in totals.items()},
             "available_s": round(available, 1),
-            "pct_of_available": {k: (round(100 * totals[k] / available, 1) if available else 0.0) for k in STATES if k not in UNAVAILABLE},
+            "pct_of_available": {k: (round(100 * totals[k] / available, 1) if available else None) for k in STATES if k not in UNAVAILABLE},
             "stops_minutes": round(_union_seconds(clipped) / 60, 1),
-            "line_output": last["pieces"] if last else 0,
-            "line_output_target": round((last["target_pph"] * last["available_s"] / 3600) if last else 0, 1),
+            "line_output": last["pieces"] if last else None,
+            "line_output_target": round(last["target_pph"] * window / 3600, 1) if last else None,
             "bottleneck_station_id": bottleneck["station_id"] if bottleneck else None,
-            "distance_m": round(sum(sum(v) for v in distance_by_bucket.values()), 1),
-            "has_position_data": any(positions.values()),
+            "distance_m": round(sum(sum(v) for v in distance_by_bucket.values()), 1) if distance_measurable else None,
+            "has_presence_data": has_presence_data,
+            "has_position_data": any(t0 <= p[0] < t1 for v in positions.values() for p in v),
+            "coverage_pct": round(100 * (window * len(stations) - totals["sin_datos"]) / (window * len(stations)), 1) if stations else 0.0,
             "has_process_data": any(p["has_process_data"] for p in per_station),
         },
         "stations": per_station,

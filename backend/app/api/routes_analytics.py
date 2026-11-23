@@ -9,6 +9,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.calculations.analytics import compute_line_analytics
+from app.calculations.evidence import count_value, floor_position, presence_value
 from app.database import get_db
 from app.models.db_models import DBEvent, DBFloorPlan, DBLine, DBPolygonZone, DBStation, DBStop
 
@@ -73,6 +74,7 @@ async def _context(session: AsyncSession, line_id: str) -> dict:
             area = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
     return {
         "line_id": line_id,
+        "calibrated": bool(fp and (fp.calibration or {}).get("is_calibrated")),
         "W": fp.width_meters if fp else 40.0,
         "H": fp.height_meters if fp else 25.0,
         "stations": stations,
@@ -105,18 +107,29 @@ async def _compute(session: AsyncSession, ctx: dict, mode: str, start: datetime,
     cycles: Dict[str, List] = {}
     presence: Dict[str, List] = {}
     for occurred_at, etype, p in rows:
+        p = p or {}
         t = _epoch(occurred_at)
         sid = p.get("station_id") or ctx["zone_to_station"].get(p.get("zone_id", ""))
-        if etype == "position" and "track_id" in p:
-            positions.setdefault(p["track_id"], []).append((t, p.get("x", 0.0), p.get("y", 0.0)))
+        if etype == "position":
+            position = floor_position(p)
+            if position:
+                track, x, y = position
+                positions.setdefault(track, []).append((t, x, y))
         elif etype == "machine_state" and sid in station_ids:
-            machine.setdefault(sid, []).append((t, p.get("state", "idle")))
+            if p.get("state") in ("running", "idle", "fault", "stopped"):
+                machine.setdefault(sid, []).append((t, p["state"]))
         elif etype == "cycle" and sid in station_ids:
-            for _ in range(max(1, int(p.get("total_parts") or 1))):
-                cycles.setdefault(sid, []).append((t, float(p.get("cycle_time_seconds") or 0), bool(p.get("is_good_piece", True))))
+            count = count_value(p.get("total_parts", 1))
+            raw_cycle = p.get("cycle_time_seconds")
+            cycle = raw_cycle if type(raw_cycle) in (int, float) and 0 < raw_cycle < float("inf") else None
+            good = p.get("is_good_piece")
+            quality = good if p.get("quality_observed") is True and type(good) is bool else None
+            if count:
+                cycles.setdefault(sid, []).append((t, cycle, quality, count))
         elif etype == "presence" and sid in station_ids:
-            present = p.get("state") in ("actividad", "quietud") if "state" in p else bool(p.get("present"))
-            presence.setdefault(sid, []).append((t, present))
+            present = presence_value(p)
+            if present is not None:
+                presence.setdefault(sid, []).append((t, present))
 
     stops_db = (
         await session.execute(
@@ -153,6 +166,7 @@ async def _compute(session: AsyncSession, ctx: dict, mode: str, start: datetime,
         line_area=ctx["area"],
         m_per_x=ctx["W"],
         m_per_y=ctx["H"],
+        calibrated=ctx["calibrated"],
         presence=presence,
         zones=[
             {"zone_id": z.zone_id, "name": z.name, "type": z.type, "polygon": z.polygon, "is_aggregated_only": z.is_aggregated_only}

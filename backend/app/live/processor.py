@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import select, or_
 
 from app.calculations.analytics import point_in_polygon
+from app.calculations.evidence import floor_position, presence_value, zone_counts
 from app.calculations.distance import TrajectoryPoint, calculate_trajectory_distance
 from app.calculations.zones import aggregate_zone_metrics
 from app.database import AsyncSessionLocal
@@ -28,7 +29,6 @@ logger = logging.getLogger("factory_pulse.live")
 POSITION_MAX_AGE = 10.0
 PRESENCE_MAX_AGE = 30.0
 MACHINE_MAX_AGE = 90.0
-CSI_PRESENT = {"actividad", "quietud"}
 
 
 def _center_in(zone_poly, x, y) -> bool:
@@ -77,7 +77,7 @@ class LiveProcessor:
             rows = (
                 await session.execute(
                     select(DBEvent.occurred_at, DBEvent.type, DBEvent.payload, DBEvent.device_id)
-                    .where(DBEvent.mode == mode, DBEvent.occurred_at >= now - window)
+                    .where(DBEvent.mode == mode, DBEvent.occurred_at >= now - window, DBEvent.occurred_at <= now)
                     .order_by(DBEvent.occurred_at)
                 )
             ).all()
@@ -86,23 +86,29 @@ class LiveProcessor:
             occupancy_bundles: Dict[str, Tuple[datetime, Dict[str, Any]]] = {}
             occupancy_legacy: Dict[Tuple[str, str], Tuple[datetime, Dict[str, Any]]] = {}
             for at, etype, p, _dev in rows:
-                if etype == "position" and "track_id" in p:
-                    positions.setdefault(p["track_id"], []).append((at, p.get("x", 0.0), p.get("y", 0.0)))
-                elif etype == "zone_occupancy":
+                if etype == "position":
+                    position = floor_position(p or {})
+                    if position:
+                        track, x, y = position
+                        positions.setdefault(track, []).append((at, x, y))
+                elif etype == "zone_occupancy" and now - at <= timedelta(seconds=12):
                     device = _dev or "unknown"
                     if isinstance(p.get("counts"), dict):
                         occupancy_bundles[device] = (at, p)
-                    elif p.get("zone_id"):
+                    elif isinstance(p.get("zone_id"), str):
                         occupancy_legacy[(device, str(p["zone_id"]))] = (at, p)
 
             aggregate_counts: Dict[str, int] = {}
-            for _at, payload in occupancy_bundles.values():
-                for zone_id, count in payload.get("counts", {}).items():
-                    aggregate_counts[str(zone_id)] = aggregate_counts.get(str(zone_id), 0) + max(0, int(count))
-            for (device, zone_id), (_at, payload) in occupancy_legacy.items():
-                if device not in occupancy_bundles:
-                    aggregate_counts[zone_id] = aggregate_counts.get(zone_id, 0) + max(0, int(payload.get("count", 0)))
-            aggregate_signal = bool(occupancy_bundles or occupancy_legacy)
+            per_source: Dict[tuple[str, str], tuple[datetime, int]] = {}
+            snapshots = [(device, at, payload) for device, (at, payload) in occupancy_bundles.items()]
+            snapshots += [(device, at, payload) for (device, _), (at, payload) in occupancy_legacy.items()]
+            for device, at, payload in snapshots:
+                for zone, count in zone_counts(payload).items():
+                    key = (device, zone)
+                    if key not in per_source or at >= per_source[key][0]:
+                        per_source[key] = (at, count)
+            for (_, zone), (_, count) in per_source.items():
+                aggregate_counts[zone] = aggregate_counts.get(zone, 0) + count
 
             live_tracks = {
                 trk: pts[-1] for trk, pts in positions.items() if (now - pts[-1][0]).total_seconds() <= POSITION_MAX_AGE
@@ -124,7 +130,7 @@ class LiveProcessor:
 
             statuses = await self._update_station_status(
                 session, now, rows, stations, zone_of, zone_to_station,
-                live_tracks, aggregate_counts, aggregate_signal,
+                live_tracks, aggregate_counts,
             )
             await self._evaluate_rules(session, now, rows, stations, zones, live_tracks, positions, statuses)
             await self._check_discrepancies(session, now, rows, stations, zone_of, zone_to_station, positions, live_tracks)
@@ -135,7 +141,7 @@ class LiveProcessor:
     # ── estado de cada estación a partir de eventos reales ──
     async def _update_station_status(
         self, session, now, rows, stations, zone_of, zone_to_station,
-        live_tracks, aggregate_counts, aggregate_signal,
+        live_tracks, aggregate_counts,
     ) -> Dict[str, str]:
         stops = (await session.execute(select(DBStop).where(DBStop.status == "open", DBStop.is_authorized == True))).scalars().all()  # noqa: E712
         presence: Dict[str, Tuple[datetime, bool]] = {}
@@ -146,14 +152,14 @@ class LiveProcessor:
             if not sid:
                 continue
             if etype == "presence":
-                present = p.get("state") in CSI_PRESENT if "state" in p else bool(p.get("present"))
-                presence[sid] = (at, present)
+                present = presence_value(p)
+                if present is not None:
+                    presence[sid] = (at, present)
             elif etype == "machine_state":
-                machine[sid] = (at, p.get("state", "idle"))
+                machine[sid] = (at, p.get("state"))
             elif etype == "cycle":
                 cycles[sid] = at
 
-        camera_active = bool(live_tracks) or aggregate_signal
         out: Dict[str, str] = {}
         for st in stations:
             sid = st.station_id
@@ -170,21 +176,25 @@ class LiveProcessor:
             pres_ok = pres is not None and (now - pres[0]).total_seconds() <= PRESENCE_MAX_AGE
             present = in_zone or (pres_ok and pres[1])
             mach = machine.get(sid)
-            running = (mach is not None and (now - mach[0]).total_seconds() <= MACHINE_MAX_AGE and mach[1] == "running") or (
-                sid in cycles and (now - cycles[sid]).total_seconds() <= max(2 * (st.ideal_cycle_seconds or 45), 60)
+            machine_state = mach[1] if mach and (now - mach[0]).total_seconds() <= MACHINE_MAX_AGE else None
+            cycle_recent = sid in cycles and (now - cycles[sid]).total_seconds() <= max(2 * (st.ideal_cycle_seconds or 45), 60)
+            absence_observed = (pres_ok and not pres[1]) or (
+                zone is not None and aggregate_counts.get(zone.zone_id) == 0
             )
-            has_process = mach is not None or sid in cycles
 
             if stopped:
                 status = "stopped"
-            elif not camera_active and not pres_ok and not has_process:
-                status = "unknown"
-            elif not present:
+            elif present:
+                if machine_state == "running" or (machine_state is None and cycle_recent):
+                    status = "active"
+                elif machine_state in ("idle", "fault", "stopped"):
+                    status = "idle"
+                else:
+                    status = "present"
+            elif absence_observed:
                 status = "unattended"
-            elif not has_process:
-                status = "present"
             else:
-                status = "active" if running else "waiting_material"
+                status = "unknown"
 
             if st.current_status != status:
                 st.current_status = status
@@ -207,7 +217,7 @@ class LiveProcessor:
             for d in devices
         ]
         fp = (await session.execute(select(DBFloorPlan))).scalars().first()
-        scale = fp.width_meters if fp else 40.0
+        scale = fp.width_meters if fp and (fp.calibration or {}).get('is_calibrated') else None
         distances = []
         for trk, pts in positions.items():
             recent_pts = [TrajectoryPoint(x, y, at) for at, x, y in pts if (now - at).total_seconds() <= 120]

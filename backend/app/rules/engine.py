@@ -58,8 +58,8 @@ class RuleEngine:
             # 1. Excessive travel rule
             if rule.rule_type == "excessive_travel":
                 for dist in distances_state:
-                    dist_val = dist.get("calibrated_meters") or (dist.get("raw_distance_norm", 0) * 40.0)
-                    if dist_val > rule.threshold:
+                    dist_val = dist.get("calibrated_meters")
+                    if dist_val is not None and dist_val > rule.threshold:
                         alert_triggered = True
                         title = f"Recorrido Excesivo: {dist.get('track_id')}"
                         desc = f"El operador/carro {dist.get('track_id')} acumuló {dist_val:.1f} m en la ventana de evaluación (Umbral: {rule.threshold} m)."

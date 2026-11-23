@@ -6,14 +6,14 @@ Nunca convierten quietud en improductividad y nunca devuelven track IDs.
 
 from bisect import bisect_right
 from collections import Counter
-from math import hypot, log2
+from math import ceil, hypot, log2
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.calculations.analytics import point_in_polygon
 
 
 PositionSample = Tuple[float, float, float, Optional[float]]  # t, x, y, speed_m_s
-OccupancySample = Tuple[float, int, Mapping[str, int]]  # t, total, zone counts
+OccupancySample = Tuple[float, Optional[int], Mapping[str, int]]  # t, total, zone counts
 Poly = Sequence[Sequence[float]]
 
 POSITION_MAX_AGE_S = 10.0
@@ -83,17 +83,18 @@ def compute_spatial_summary(
     t1: float,
     zones: List[Dict[str, Any]],
     positions: Mapping[str, List[PositionSample]],
-    occupancy: Mapping[str, List[OccupancySample]],
+    occupancy: Mapping[Tuple[str, str], List[OccupancySample]],
     width_m: float,
     height_m: float,
     scope_poly: Optional[Poly] = None,
     use_occupancy_total: bool = False,
+    calibrated: bool = True,
     step_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Build privacy-safe spatial metrics for one plant/line/station/zone scope."""
     window_s = max(1.0, t1 - t0)
     step = float(step_s or max(1.0, window_s / 1800.0))
-    sample_count = max(1, int(window_s / step))
+    sample_count = max(1, ceil(window_s / step))
     zones = sorted(
         zones,
         key=lambda z: ({"work": 0, "storage": 1, "transit": 2}.get(z.get("type"), 3), z.get("zone_id", "")),
@@ -102,7 +103,7 @@ def compute_spatial_summary(
     zone_by_id = {str(z["zone_id"]): z for z in zones}
     private_ids = {str(z["zone_id"]) for z in zones if z.get("is_aggregated_only")}
 
-    enriched = _derive_missing_speeds(positions, width_m, height_m)
+    enriched = _derive_missing_speeds(positions, width_m, height_m) if calibrated else dict(positions)
     track_times = {track: [p[0] for p in samples] for track, samples in enriched.items()}
     occupancy_sorted = {source: sorted(samples, key=lambda p: p[0]) for source, samples in occupancy.items()}
     occupancy_times = {source: [p[0] for p in samples] for source, samples in occupancy_sorted.items()}
@@ -114,23 +115,28 @@ def compute_spatial_summary(
     zone_unknown_s = Counter({zid: 0.0 for zid in zone_ids})
     zone_visits = Counter({zid: 0 for zid in zone_ids})
     zone_series: Dict[str, List[int]] = {zid: [] for zid in zone_ids}
-    zone_last_count = Counter({zid: 0 for zid in zone_ids})
+    zone_last_count: Dict[str, int] = {}
+    zone_observed_s: Counter[str] = Counter()
     transitions: Counter[Tuple[str, str]] = Counter()
     last_zone: Dict[str, Optional[str]] = {}
     last_seen: Dict[str, float] = {}
     sequences: Dict[str, List[str]] = {}
     backtracks = 0
 
-    observed_samples = 0
+    observed_s = 0.0
     scope_person_s = 0.0
     stationary_s = moving_s = unknown_s = 0.0
     scope_series: List[int] = []
     last_observed_at: Optional[float] = None
-    current_people = 0
+    current_people: Optional[int] = None
 
-    for sample_idx in range(sample_count):
-        t = min(t1, t0 + (sample_idx + 0.5) * step)
+    for sample_idx in range(sample_count + 1):
+        current = sample_idx == sample_count
+        start = t0 + sample_idx * step
+        duration = 0.0 if current else max(0.0, min(step, t1 - start))
+        t = t1 if current else start + duration / 2
         track_counts = Counter()
+        track_at: List[float] = []
         track_states: Dict[str, Counter[str]] = {zid: Counter() for zid in zone_ids}
         live_tracks: Dict[str, Tuple[float, float, Optional[float], Optional[str]]] = {}
 
@@ -138,57 +144,75 @@ def compute_spatial_summary(
             idx = bisect_right(times, t) - 1
             if idx < 0 or t - times[idx] > POSITION_MAX_AGE_S:
                 continue
-            _, x, y, speed = enriched[track][idx]
+            at, x, y, speed = enriched[track][idx]
             if not _inside_scope(x, y, scope_poly):
                 continue
             zone_id = next(
                 (str(z["zone_id"]) for z in zones if point_in_polygon(x, y, z["polygon"])),
                 None,
             )
-            live_tracks[track] = (x, y, speed, zone_id)
+            if zone_id in private_ids:
+                last_zone[track] = None
+                sequences[track] = []
+                continue
+            track_at.append(at)
+            live_tracks[track] = (x, y, speed if calibrated else None, zone_id)
             if zone_id:
                 track_counts[zone_id] += 1
-                track_states[zone_id][_motion_state(speed)] += 1
+                track_states[zone_id][_motion_state(speed if calibrated else None)] += 1
 
         aggregate_counts: Counter[str] = Counter()
-        aggregate_total = 0
-        aggregate_fresh = False
-        for source, times in occupancy_times.items():
+        aggregate_totals = []
+        zone_snapshots: Dict[Tuple[str, str], Tuple[float, int]] = {}
+        for key, times in occupancy_times.items():
             idx = bisect_right(times, t) - 1
             if idx < 0 or t - times[idx] > OCCUPANCY_MAX_AGE_S:
                 continue
-            aggregate_fresh = True
-            _, total, counts = occupancy_sorted[source][idx]
-            aggregate_total += max(0, int(total))
+            at, total, counts = occupancy_sorted[key][idx]
+            if total is not None:
+                aggregate_totals.append((at, total))
             for zone_id, count in counts.items():
-                if str(zone_id) in zone_ids:
-                    aggregate_counts[str(zone_id)] += max(0, int(count))
+                if zone_id in zone_ids:
+                    source_zone = (key[0], zone_id)
+                    if source_zone not in zone_snapshots or at >= zone_snapshots[source_zone][0]:
+                        zone_snapshots[source_zone] = (at, count)
+        for (_, zone_id), (_, count) in zone_snapshots.items():
+            aggregate_counts[zone_id] += count
 
-        observed = aggregate_fresh or bool(live_tracks)
-        if not observed:
+        counts = dict(track_counts)
+        counts.update(aggregate_counts)
+        if use_occupancy_total and aggregate_totals:
+            scope_count = sum(total for _, total in aggregate_totals)
+            observed_times = [at for at, _ in aggregate_totals]
+        else:
+            scope_count = len(live_tracks) if use_occupancy_total else sum(counts.values())
+            observed_times = track_at + [at for at, _ in zone_snapshots.values()]
+
+        if observed_times:
+            latest = max(observed_times)
+            last_observed_at = max(latest, last_observed_at) if last_observed_at is not None else latest
+        if current:
+            current_people = scope_count if observed_times else None
+            zone_last_count = counts
+            break
+        if not observed_times:
             for zid in zone_ids:
                 zone_series[zid].append(0)
-            scope_series.append(0)
             continue
 
-        observed_samples += 1
-        last_observed_at = t
-        counts = aggregate_counts if aggregate_fresh else track_counts
-        if aggregate_fresh:
-            scope_count = aggregate_total if use_occupancy_total else sum(counts.values())
-        else:
-            scope_count = len(live_tracks)
-        current_people = scope_count
+        observed_s += duration
         scope_series.append(scope_count)
-        scope_person_s += scope_count * step
+        scope_person_s += scope_count * duration
 
         for zid in zone_ids:
-            count = max(0, int(counts.get(zid, 0)))
-            zone_last_count[zid] = count
-            zone_series[zid].append(count)
-            zone_person_s[zid] += count * step
+            count = counts.get(zid)
+            zone_series[zid].append(count if count is not None else 0)
+            if count is None:
+                continue
+            zone_observed_s[zid] += duration
+            zone_person_s[zid] += count * duration
             if count:
-                zone_occupied_s[zid] += step
+                zone_occupied_s[zid] += duration
 
             state_counts = track_states[zid]
             stationary = min(count, int(state_counts.get("stationary", 0)))
@@ -196,9 +220,9 @@ def compute_spatial_summary(
             unknown = max(0, count - stationary - moving)
             if zid in private_ids:
                 stationary, moving, unknown = 0, 0, count
-            zone_stationary_s[zid] += stationary * step
-            zone_moving_s[zid] += moving * step
-            zone_unknown_s[zid] += unknown * step
+            zone_stationary_s[zid] += stationary * duration
+            zone_moving_s[zid] += moving * duration
+            zone_unknown_s[zid] += unknown * duration
 
         # El reparto global incluye tracks fuera de una zona dibujada. Cuando el
         # conteo agregado y los tracks no coinciden, la diferencia queda como
@@ -210,9 +234,9 @@ def compute_spatial_summary(
         sample_stationary = min(scope_count, int(global_states.get("stationary", 0)))
         sample_moving = min(max(0, scope_count - sample_stationary), int(global_states.get("moving", 0)))
         sample_unknown = max(0, scope_count - sample_stationary - sample_moving)
-        stationary_s += sample_stationary * step
-        moving_s += sample_moving * step
-        unknown_s += sample_unknown * step
+        stationary_s += sample_stationary * duration
+        moving_s += sample_moving * duration
+        unknown_s += sample_unknown * duration
 
         # Visitas y rutas se agregan, nunca se publican secuencias o IDs.
         for track, (_x, _y, _speed, zid) in live_tracks.items():
@@ -242,12 +266,12 @@ def compute_spatial_summary(
                 last_zone[track] = zid
             last_seen[track] = t
 
-    observed_s = min(window_s, observed_samples * step)
     coverage_pct = round(100 * observed_s / window_s, 1)
 
     # Distancia agregada: filtra jitter, teletransportes, zonas privadas y huecos.
     distance_m = 0.0
-    for samples in enriched.values():
+    distance_measurable = False
+    for samples in (enriched.values() if calibrated else []):
         previous: Optional[PositionSample] = None
         for point in samples:
             t, x, y, _speed = point
@@ -260,15 +284,17 @@ def compute_spatial_summary(
                 private = any(point_in_polygon(x, y, zone_by_id[zid]["polygon"]) for zid in private_ids)
                 previous_private = any(point_in_polygon(px, py, zone_by_id[zid]["polygon"]) for zid in private_ids)
                 if (
-                    0 < dt <= POSITION_MAX_AGE_S
+                    pt >= t0 and 0 < dt <= POSITION_MAX_AGE_S
                     and _inside_scope(x, y, scope_poly)
                     and _inside_scope(px, py, scope_poly)
                     and not private
                     and not previous_private
                 ):
                     distance = hypot((x - px) * width_m, (y - py) * height_m)
-                    if distance >= MIN_DISTANCE_M and distance / dt <= MAX_PLAUSIBLE_SPEED_M_S:
-                        distance_m += distance
+                    if distance / dt <= MAX_PLAUSIBLE_SPEED_M_S:
+                        distance_measurable = True
+                        if distance >= MIN_DISTANCE_M:
+                            distance_m += distance
             previous = point
 
     zone_rows: List[Dict[str, Any]] = []
@@ -296,18 +322,19 @@ def compute_spatial_summary(
             "name": zone.get("name", zid),
             "type": zone.get("type", "work"),
             "line_id": zone.get("line_id"),
-            "current_count": int(zone_last_count[zid]),
-            "average_occupancy": round(person_s / observed_s, 2) if observed_s else 0.0,
+            "current_count": zone_last_count.get(zid),
+            "average_occupancy": round(person_s / zone_observed_s[zid], 2) if zone_observed_s[zid] else None,
+            "coverage_pct": round(100 * zone_observed_s[zid] / window_s, 1),
             "peak_occupancy": peak,
             "person_minutes": round(person_s / 60, 2),
-            "occupied_pct": round(100 * zone_occupied_s[zid] / observed_s, 1) if observed_s else 0.0,
+            "occupied_pct": round(100 * zone_occupied_s[zid] / zone_observed_s[zid], 1) if zone_observed_s[zid] else None,
             "stationary_pct": round(100 * zone_stationary_s[zid] / denom, 1),
             "moving_pct": round(100 * zone_moving_s[zid] / denom, 1),
             "unknown_motion_pct": round(100 * zone_unknown_s[zid] / denom, 1),
-            "visits": None if zid in private_ids else int(zone_visits[zid]),
-            "visits_per_hour": None if zid in private_ids or observed_s == 0 else round(zone_visits[zid] * 3600 / observed_s, 1),
-            "area_m2": round(area_m2, 2),
-            "peak_density_person_m2": round(peak / area_m2, 3) if area_m2 > 0 else 0.0,
+            "visits": None if zid in private_ids or not zone_observed_s[zid] else int(zone_visits[zid]),
+            "visits_per_hour": None if zid in private_ids or not zone_observed_s[zid] else round(zone_visits[zid] * 3600 / zone_observed_s[zid], 1),
+            "area_m2": round(area_m2, 2) if calibrated else None,
+            "peak_density_person_m2": round(peak / area_m2, 3) if calibrated and area_m2 > 0 and zone_observed_s[zid] else None,
             "max_capacity": capacity,
             "congested_seconds": round(congested_s, 1),
             "excess_person_minutes": round(excess_person_s / 60, 2),
@@ -323,7 +350,7 @@ def compute_spatial_summary(
         key=lambda z: (
             z["peak_occupancy"] > (z["max_capacity"] if z["max_capacity"] is not None else 10**9),
             z["excess_person_minutes"],
-            z["peak_density_person_m2"],
+            z["peak_density_person_m2"] or 0,
             z["peak_occupancy"],
         ),
         default=None,
@@ -350,15 +377,15 @@ def compute_spatial_summary(
     active_public = sum(1 for z in public_zones if z["person_minutes"] > 0)
 
     freshness_age = None if last_observed_at is None else max(0.0, t1 - last_observed_at)
-    is_fresh = freshness_age is not None and freshness_age <= OCCUPANCY_MAX_AGE_S
+    is_fresh = current_people is not None
     if not is_fresh:
         for zone in zone_rows:
             zone["current_count"] = None
     summary: Dict[str, Any] = {
         "current_people": current_people if is_fresh else None,
-        "average_occupancy": round(scope_person_s / observed_s, 2) if observed_s else 0.0,
-        "peak_occupancy": max(scope_series, default=0),
-        "observed_person_minutes": round(scope_person_s / 60, 2),
+        "average_occupancy": round(scope_person_s / observed_s, 2) if observed_s else None,
+        "peak_occupancy": max(scope_series, default=None),
+        "observed_person_minutes": round(scope_person_s / 60, 2) if observed_s else None,
         "stationary_pct": round(100 * stationary_s / scope_person_s, 1) if scope_person_s else 0.0,
         "moving_pct": round(100 * moving_s / scope_person_s, 1) if scope_person_s else 0.0,
         "unknown_motion_pct": round(100 * unknown_s / scope_person_s, 1) if scope_person_s else 0.0,
@@ -377,8 +404,8 @@ def compute_spatial_summary(
             "over_capacity": max_congestion["max_capacity"] is not None
             and max_congestion["peak_occupancy"] > max_congestion["max_capacity"],
         },
-        "distance_m": round(distance_m, 1),
-        "distance_per_person_hour_m": round(distance_m / (scope_person_s / 3600), 1) if scope_person_s >= 60 else None,
+        "distance_m": round(distance_m, 1) if distance_measurable else None,
+        "distance_per_person_hour_m": round(distance_m / (scope_person_s / 3600), 1) if distance_measurable and scope_person_s >= 60 else None,
         "total_transitions": total_transitions,
         "route_concentration_pct": top_route_share,
         "transition_entropy_pct": entropy_pct,
@@ -386,7 +413,7 @@ def compute_spatial_summary(
         "zone_utilization_pct": round(100 * active_public / len(public_zones), 1) if public_zones else 0.0,
         "congestion_excess_person_minutes": round(total_excess_person_s / 60, 2),
         "congested_seconds": round(total_congested_s, 1),
-        "peak_density_person_m2": round(peak_density, 3),
+        "peak_density_person_m2": round(peak_density, 3) if calibrated and any(zone_observed_s.values()) else None,
     }
     return {
         "step_s": round(step, 3),
@@ -446,9 +473,9 @@ def build_spatial_insights(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     if congested:
         zone = max(congested, key=lambda z: (z["excess_person_minutes"], z["peak_occupancy"]))
         add(
-            f"capacity-{zone['zone_id']}", "attention", 95, f"Capacidad superada en {zone['name']}",
-            "La ocupación rebasó la capacidad configurada durante la ventana.",
-            f"Pico {zone['peak_occupancy']} personas; capacidad {zone['max_capacity']}; {zone['congested_seconds']:.0f} s sobre el límite.",
+            f"capacity-{zone['zone_id']}", "attention", 95, f"Revisar capacidad en {zone['name']}",
+            "Las detecciones atribuidas a la zona rebasaron el límite configurado. Verificar el conteo antes de intervenir.",
+            f"Pico {zone['peak_occupancy']} detecciones; capacidad {zone['max_capacity']}; {zone['congested_seconds']:.0f} s sobre el límite.",
             "Validar si existe una espera, cruce de flujos o restricción de seguridad; no atribuir una causa sin observar el proceso.",
             scope_id=zone["zone_id"], layer="dwell",
         )
@@ -497,10 +524,11 @@ def build_spatial_insights(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             scope_id=top["zone_id"], layer="dwell",
         )
 
-    if summary["coverage_pct"] >= 80 and not congested:
+    limited = [z for z in zones if z["max_capacity"] is not None]
+    if limited and all(z["coverage_pct"] >= 80 for z in limited) and not congested:
         add(
             "capacity-ok", "good", 20, "Sin sobrecapacidad configurada",
-            "No se detectaron zonas por encima de sus límites definidos.",
+            "Ninguna de las zonas con límite superó su capacidad durante los intervalos observados.",
             f"Cobertura válida: {summary['coverage_pct']:.0f}%.",
             "Mantener la observación y comparar contra otros turnos antes de establecer una línea base.",
             layer="zones",

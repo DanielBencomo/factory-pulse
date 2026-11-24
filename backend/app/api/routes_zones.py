@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
+from app.cameras.calibration import CalibrationRef, active_revisions, require_projection
 from app.models.db_models import DBPolygonZone, DBAuditLog, DBEvent, DBFloorPlan, DBLine, DBStation
 from app.calculations.evidence import count_value, floor_position, zone_counts
 from app.ws.manager import ws_manager
@@ -42,8 +43,12 @@ async def list_zones(session: AsyncSession = Depends(get_db)):
     zones = res.scalars().all()
     return [_zone_response(z) for z in zones]
 
+class ZoneInput(PolygonZoneCreate):
+    calibration_ref: CalibrationRef | None = None
+
+
 @router.post("/zones", response_model=PolygonZoneResponse, status_code=status.HTTP_201_CREATED)
-async def create_zone(zone_in: PolygonZoneCreate, session: AsyncSession = Depends(get_db)):
+async def create_zone(zone_in: ZoneInput, session: AsyncSession = Depends(get_db)):
     if not zone_in.name.strip():
         raise HTTPException(status_code=422, detail="La zona necesita un nombre")
     if len(zone_in.polygon) < 3 or any(
@@ -53,6 +58,8 @@ async def create_zone(zone_in: PolygonZoneCreate, session: AsyncSession = Depend
         raise HTTPException(status_code=422, detail="El polígono debe tener al menos 3 puntos dentro de 0..1")
     if _polygon_area(zone_in.polygon) < 1e-6:
         raise HTTPException(status_code=422, detail="El polígono no puede tener área cero")
+    if zone_in.calibration_ref:
+        await require_projection(session, zone_in.calibration_ref, zone_in.floor_plan_id, zone_in.polygon)
     if (await session.execute(select(DBPolygonZone).where(DBPolygonZone.zone_id == zone_in.zone_id))).scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Ya existe una zona con ese ID")
     if not (await session.execute(select(DBFloorPlan).where(DBFloorPlan.id == zone_in.floor_plan_id))).scalar_one_or_none():
@@ -113,12 +120,13 @@ async def live_zone_occupancy(
         )
     ).all()
 
+    revisions = await active_revisions(session)
     tracks: set[str] = set()
     snapshots: Dict[tuple[str, str], tuple[datetime, Dict[str, Any]]] = {}
     for at, event_type, payload, device_id in rows:
         payload = payload or {}
         if event_type == "position":
-            position = floor_position(payload)
+            position = floor_position(payload, device_id, revisions)
             if position:
                 tracks.add(position[0])
         elif isinstance(payload.get("zone_id"), str) and count_value(payload.get("count")) is not None:
@@ -131,7 +139,7 @@ async def live_zone_occupancy(
     for (source, scope), (at, payload) in snapshots.items():
         if scope == "__plant__":
             totals.append((at, payload["count"]))
-        for zone, count in zone_counts(payload).items():
+        for zone, count in zone_counts(payload, source, revisions).items():
             key = (source, zone)
             if key not in zone_by_source or at >= zone_by_source[key][0]:
                 zone_by_source[key] = (at, count)

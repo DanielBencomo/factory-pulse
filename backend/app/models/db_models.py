@@ -136,7 +136,8 @@ class DBCameraConfig(Base):
     auto_start = Column(Boolean, default=True)
     enabled = Column(Boolean, default=True)
     display_order = Column(Integer, default=0)
-    calibration_path = Column(Text, nullable=True)
+    calibration_path = Column(Text, nullable=True)  # Histórico; ya no se lee ni se expone por API.
+    calibration_data = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

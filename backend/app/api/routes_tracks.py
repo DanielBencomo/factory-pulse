@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
+from app.cameras.calibration import active_revisions
 from app.calculations.evidence import floor_position
-from app.models.db_models import DBEvent, DBFloorPlan
+from app.models.db_models import DBEvent
 
 router = APIRouter()
 
@@ -28,20 +29,18 @@ async def track_history(
     mode = "live"
     now = datetime.utcnow()
     since = now - timedelta(minutes=minutes)
-    # Si la nave cambió de medidas, lo anterior está en otro marco de coordenadas.
-    fp = (await session.execute(select(DBFloorPlan))).scalars().first()
-    frame_since = (fp.calibration or {}).get("frame_since") if fp else None
-    if frame_since:
-        since = max(since, datetime.fromisoformat(frame_since) + timedelta(microseconds=1))
+    revisions = await active_revisions(session)
+    if not revisions:
+        return {}
     res = await session.execute(
-        select(DBEvent.occurred_at, DBEvent.payload)
+        select(DBEvent.occurred_at, DBEvent.payload, DBEvent.device_id)
         .where(DBEvent.type == "position", DBEvent.occurred_at >= since, DBEvent.occurred_at <= now, DBEvent.mode == mode)
         .order_by(DBEvent.occurred_at)
     )
 
     out: Dict[str, List[List[float]]] = {}
-    for occurred_at, p in res.all():
-        position = floor_position(p or {})
+    for occurred_at, p, device_id in res.all():
+        position = floor_position(p or {}, device_id, revisions)
         if position is None:
             continue
         trk, x, y = position

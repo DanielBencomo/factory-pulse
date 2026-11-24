@@ -16,6 +16,8 @@ interface Props {
   onSaved: () => void | Promise<void>;
   snapshotUrl: string;
   mapUrl: string;
+  revision: string;
+  cameraId: string;
 }
 
 type Overlay = { id: string; name: string; color: string; points: Point[]; kind: DrawTarget };
@@ -30,10 +32,11 @@ const slug = (value: string) =>
 
 export const CameraMapEditor: React.FC<Props> = ({
   floorPlan, zones, lines, stations, onClose, onSaved,
-  snapshotUrl, mapUrl,
+  snapshotUrl, mapUrl, revision, cameraId,
 }) => {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [capture, setCapture] = useState(Date.now());
+  const [imageReady, setImageReady] = useState(false);
   const [points, setPoints] = useState<Point[]>([]);
   const [overlays, setOverlays] = useState<Overlay[]>([]);
   const [target, setTarget] = useState<DrawTarget>('zone');
@@ -49,12 +52,12 @@ export const CameraMapEditor: React.FC<Props> = ({
   const project = useCallback(async (items: Point[], direction: 'camera_to_floor' | 'floor_to_camera'): Promise<Point[]> => {
     const response = await fetch(mapUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ points: items, direction }),
+      body: JSON.stringify({ points: items, direction, revision }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.detail || 'No se pudo proyectar el polígono');
     return body.points as Point[];
-  }, [mapUrl]);
+  }, [mapUrl, revision]);
 
   useEffect(() => {
     let active = true;
@@ -68,10 +71,10 @@ export const CameraMapEditor: React.FC<Props> = ({
             id: zone.zone_id, name: zone.name, color: zone.color, points: zone.polygon, kind: 'zone' as const,
           })),
         ];
-        const mapped = await Promise.all(candidates.map(async (item) => ({
+        const mapped = await Promise.allSettled(candidates.map(async (item) => ({
           ...item, points: await project(item.points, 'floor_to_camera'),
         })));
-        if (active) setOverlays(mapped);
+        if (active) setOverlays(mapped.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []));
       } catch (err: any) {
         if (active) setError(err.message ?? String(err));
       }
@@ -92,7 +95,7 @@ export const CameraMapEditor: React.FC<Props> = ({
   };
 
   const addPoint = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (busy) return;
+    if (busy || !imageReady) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     setPoints((current) => [
@@ -122,13 +125,14 @@ export const CameraMapEditor: React.FC<Props> = ({
     try {
       const floorPoints = await project(points, 'camera_to_floor');
       if (target === 'line') {
-        await api.updateLinePolygon(lineId, floorPoints);
+        await api.updateLinePolygon(lineId, floorPoints, { camera_id: cameraId, revision });
       } else {
         const aggregated = privateOnly || zoneType === 'bathroom';
         const parsedCapacity = capacity.trim() ? Number(capacity) : undefined;
         await api.createZone({
           zone_id: `${slug(name)}-${Date.now().toString(36)}`,
           floor_plan_id: floorPlan.id,
+          calibration_ref: { camera_id: cameraId, revision },
           name: name.trim(),
           type: zoneType,
           polygon: floorPoints,
@@ -169,9 +173,9 @@ export const CameraMapEditor: React.FC<Props> = ({
           <div
             ref={canvasRef}
             onClick={addPoint}
-            className="relative bg-[#111820] overflow-hidden cursor-crosshair border border-line select-none"
+            className="relative bg-[#111820] overflow-hidden cursor-crosshair select-none"
           >
-            <img src={`${snapshotUrl}?capture=${capture}`} alt="Imagen congelada para delimitar áreas" className="w-full block" draggable={false} />
+            <img src={`${snapshotUrl}?capture=${capture}`} alt="Imagen congelada para delimitar áreas" className="w-full block" draggable={false} onLoad={() => setImageReady(true)} onError={() => setError("No se pudo cargar la captura.")} />
             <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
               {overlays.map((overlay) => (
                 <polygon
@@ -208,7 +212,7 @@ export const CameraMapEditor: React.FC<Props> = ({
             <button className="btn btn-sm btn-ghost" onClick={() => setPoints([])} disabled={!points.length}>
               <RotateCcw className="h-3.5 w-3.5" /> Limpiar
             </button>
-            <button className="btn btn-sm btn-ghost" onClick={() => { setPoints([]); setCapture(Date.now()); }}>
+            <button className="btn btn-sm btn-ghost" onClick={() => { setPoints([]); setImageReady(false); setCapture(Date.now()); }}>
               <Camera className="h-3.5 w-3.5" /> Nueva captura
             </button>
           </div>

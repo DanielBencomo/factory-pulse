@@ -38,6 +38,7 @@ _ADDED_COLUMNS = [
     ("stations", "equipment_type", "VARCHAR(32)"),
     ("polygon_zones", "interior", "JSON"),
     ("devices", "simulated", "BOOLEAN DEFAULT 0"),
+    ("camera_configs", "calibration_data", "JSON"),
 ]
 
 async def _migrate_columns(conn):
@@ -76,13 +77,7 @@ async def seed_default_data(session: AsyncSession):
             description="Ajusta las dimensiones reales en el editor de layout",
             width_meters=40.0,
             height_meters=25.0,
-            calibration={
-                "is_calibrated": False,
-                "point1": [0.05, 0.5],
-                "point2": [0.95, 0.5],
-                "real_distance_meters": 36.0,
-                "meters_per_norm_unit": 40.0
-            }
+            calibration={}
         )
         session.add(fp)
 

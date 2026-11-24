@@ -12,7 +12,8 @@ from app.calculations.analytics import point_in_polygon
 from app.calculations.evidence import count_value, floor_position, zone_counts
 from app.calculations.spatial import build_spatial_insights, compute_spatial_summary
 from app.database import get_db
-from app.models.db_models import DBEvent, DBFloorPlan, DBLine, DBPolygonZone, DBStation
+from app.cameras.calibration import active_revisions, main_floor
+from app.models.db_models import DBEvent, DBLine, DBPolygonZone, DBStation
 
 
 router = APIRouter()
@@ -105,7 +106,8 @@ async def _build_spatial_response(
     minutes: int,
 ) -> Dict[str, Any]:
     active_mode = "live"
-    floor_plan = (await session.execute(select(DBFloorPlan))).scalars().first()
+    floor_plan = await main_floor(session)
+    revisions = await active_revisions(session, floor_plan)
     width_m = floor_plan.width_meters if floor_plan else 40.0
     height_m = floor_plan.height_meters if floor_plan else 25.0
     zones, scope_poly, scope_label, use_total = await _scope_context(session, scope, scope_id)
@@ -135,7 +137,7 @@ async def _build_spatial_response(
         device = str(device_id or payload.get("source") or "unknown")
         timestamp = _epoch(occurred_at)
         if event_type == "position":
-            position = floor_position(payload)
+            position = floor_position(payload, device_id, revisions)
             if position:
                 track, x, y = position
                 devices.add(device)
@@ -145,12 +147,12 @@ async def _build_spatial_response(
             count = count_value(payload.get("count"))
             if not isinstance(scope_key, str) or count is None:
                 continue
-            counts = zone_counts(payload)
+            counts = zone_counts(payload, device_id, revisions)
             if scope_key == "__plant__" or counts:
                 devices.add(device)
                 occupancy[(device, scope_key)].append((timestamp, count if scope_key == "__plant__" else None, counts))
 
-    calibrated = bool(floor_plan and (floor_plan.calibration or {}).get('is_calibrated'))
+    calibrated = bool(revisions)
     result = compute_spatial_summary(
         t0=_epoch(start),
         t1=_epoch(end),

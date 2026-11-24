@@ -55,7 +55,7 @@ efectivamente cargados, no sólo el perfil configurado.
 
 FastAPI administra las fuentes registradas en **Cámara**. Cada registro conserva
 tipo, URL sin credenciales, usuario, contraseña cifrada, transporte, perfil
-YOLO y archivo de calibración. El navegador consume rutas `/api/cameras/{id}` y
+YOLO y revisión de calibración guardada en SQLite. El navegador consume rutas `/api/cameras/{id}` y
 ya no conoce ni depende de un puerto de visión fijo.
 
 El backend detecta automáticamente `.venv-vision` en la raíz. Si el entorno se
@@ -109,28 +109,29 @@ python hardware\local_vision_provider.py --source 1
 
 ## Calibración del piso y zonas
 
-Con la cámara en su posición definitiva, seleccione cuatro puntos del piso en
-este orden: superior izquierda, superior derecha, inferior derecha e inferior
-izquierda.
+1. Fija la cámara y configura las dimensiones **medidas** en **Layout**.
+2. Marca cuatro referencias físicas en el piso siguiendo el perímetro del área
+   visible. Mide sus coordenadas X/Y desde el mismo origen del plano.
+3. En **Cámaras → Calibrar piso**, congela una imagen y marca las cuatro
+   correspondencias. Añade por lo menos un control interior que no se usó
+   para el ajuste; se recomiendan dos o más distribuidos por el área.
+4. Selecciona **Validar y guardar**. Si la desviación máxima supera la
+   tolerancia, corrige las referencias y vuelve a medir. Una tolerancia de
+   0.25 m es el valor inicial, no una garantía de precisión en planta.
+5. Revisa que la tarjeta indique proyección activa y que un recorrido sobre
+   referencias medidas coincida con el plano.
 
-```powershell
-python hardware\local_vision_provider.py `
-  --source "rtsp://192.168.1.50:8554/live" `
-  --calibrate calib-planta.json `
-  --plant-width 8 `
-  --plant-height 5
-```
-
-Después escriba `calib-planta.json` en **Archivo de calibración** al registrar o
-editar esa cámara. El backend lo pasa únicamente al proveedor correspondiente.
-
-El proveedor consulta `/api/zones`. Con una calibración válida proyecta los
-polígonos editados en el dashboard sobre el video. Sin calibración, sólo se
-publican detecciones en imagen, no coordenadas de piso ni conteos por zona.
+El backend publica una sola matriz normalizada para el editor y el proveedor.
+Una cámara sin calibración sigue detectando personas en la imagen, pero no
+aporta XY ni ocupación por zona. Las referencias delimitan la huella: no se
+extrapolan posiciones fuera de ella. Si mueves la cámara o cambias el zoom,
+invalida y vuelve a calibrar, aunque la resolución no cambie. Los archivos
+JSON de la calibración antigua quedan como referencia local; no se importan
+ni se activan automáticamente.
 
 ### Dibujar departamentos sobre una captura
 
-Con la cámara registrada y el archivo de calibración cargado, abra
+Con una calibración activa, abre
 **Cámara → Mapear áreas**:
 
 1. pulse **Nueva captura** si desea congelar otro instante;
@@ -139,8 +140,8 @@ Con la cámara registrada y el archivo de calibración cargado, abra
 4. asigne nombre, tipo, línea, estación y capacidad;
 5. active *Solo conteo agregado* en áreas sensibles y guarde.
 
-El navegador envía los puntos a `/vision/map-points`; el proveedor aplica la
-homografía y FastAPI guarda el resultado normalizado. Los accesos sanitarios se
+El navegador envía puntos y revisión a `/api/cameras/{id}/map-points`.
+FastAPI aplica la homografía validada y comprueba la misma revisión al guardar. Los accesos sanitarios se
 fuerzan siempre a modo agregado, aunque se desmarque la opción.
 
 ## Spaghetti sin saturación visual
@@ -188,7 +189,7 @@ solo necesita acceso a FastAPI.
   suba iluminación y pruebe Equilibrado o Alta precisión.
 - **Hay recuadros, pero no aparecen tracks en el plano:** revise `backend_ok`
   en `/api/cameras/<ID>/health` y el puerto de `VISION_BACKEND_URL`.
-- **No aparecen zonas sobre la cámara:** hace falta `--calib` y al menos una zona
+- **No aparecen zonas sobre la cámara:** hace falta una calibración activa y al menos una zona
   válida en `/api/zones`.
 - **RTSP tarda o se corta:** pruebe primero `--probe-source`, use TCP, acerque el
   teléfono al punto de acceso y reduzca la resolución en la app del teléfono.

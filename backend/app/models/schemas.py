@@ -17,6 +17,7 @@ class BaseResponse(BaseModel):
 
 class PositionPayload(BaseModel):
     coordinate_space: Literal["floor", "image"]
+    calibration_revision: Optional[str] = None
     x: float = Field(..., ge=0.0, le=1.0, description="Normalized X coordinate 0..1")
     y: float = Field(..., ge=0.0, le=1.0, description="Normalized Y coordinate 0..1")
     track_id: str = Field(..., description="Ephemeral track ID, e.g. TRK-A12")
@@ -30,6 +31,7 @@ class ZoneOccupancyPayload(BaseModel):
     count: int = Field(..., ge=0)
     aggregated: bool = True
     coordinate_space: Optional[Literal["floor", "image"]] = None
+    calibration_revision: Optional[str] = None
     source: str = "vision_yolo_bytetrack"
     counts: Optional[Dict[str, int]] = Field(
         None, description="Snapshot opcional zone_id -> personas de una cámara"
@@ -103,16 +105,14 @@ class EventResponse(EventIngest):
 
 class ScaleCalibration(BaseModel):
     is_calibrated: bool = False
-    point1: List[float] = Field(default=[0.0, 0.0], description="[x, y] normalized")
-    point2: List[float] = Field(default=[1.0, 0.0], description="[x, y] normalized")
-    real_distance_meters: float = Field(default=30.0, gt=0.0)
-    meters_per_norm_unit: float = Field(default=30.0, gt=0.0)
+    frame_revision: str = "initial"
+    revision_key: str = ""
 
 class FloorPlanBase(BaseModel):
     name: str = "Línea 1 - Ensamble Electrónico"
     description: Optional[str] = "Plano general de la nave de producción A"
-    width_meters: float = 40.0
-    height_meters: float = 25.0
+    width_meters: float = Field(40.0, gt=1, le=2000)
+    height_meters: float = Field(25.0, gt=1, le=2000)
     image_url: Optional[str] = None
     svg_data: Optional[str] = None
     calibration: ScaleCalibration = Field(default_factory=ScaleCalibration)

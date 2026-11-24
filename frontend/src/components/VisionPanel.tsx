@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Cctv, ExternalLink, MapPinned, RefreshCw, ScanLine, Video, WifiOff } from 'lucide-react';
+import { Cctv, ExternalLink, Crosshair, MapPinned, RefreshCw, ScanLine, Video, WifiOff } from 'lucide-react';
 import { CameraConfig, FloorPlan, Line, PolygonZone, Station } from '../types';
+import { CameraCalibrationEditor } from './CameraCalibrationEditor';
 import { CameraMapEditor } from './CameraMapEditor';
 
 type VisionHealth = {
@@ -12,7 +13,7 @@ type VisionHealth = {
   tracks?: number;
   detections?: number;
   zones?: number;
-  calibrated?: boolean;
+  calibration_revision?: string | null;
   backend_ok?: boolean;
   updated_at?: string;
 };
@@ -46,6 +47,7 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
   const [reachable, setReachable] = useState(false);
   const [streamLoaded, setStreamLoaded] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [calibrating, setCalibrating] = useState(false);
   const [mapping, setMapping] = useState(false);
   const [view, setView] = useState<'annotated' | 'raw'>(camera?.show_annotations === false ? 'raw' : 'annotated');
   const wasOnline = useRef(false);
@@ -98,6 +100,8 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
     const separator = baseStreamUrl.includes('?') ? '&' : '?';
     return `${baseStreamUrl}${separator}session=${retry}`;
   }, [baseStreamUrl, retry]);
+
+  useEffect(() => { setMapping(false); }, [health?.calibration_revision]);
 
   const updatedAt = Date.parse(health?.updated_at ?? '');
   const online = Boolean(
@@ -191,7 +195,7 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
       </div>
 
       <footer className="px-3.5 py-2.5 border-t border-line flex flex-wrap items-center gap-2 text-[11.5px] text-ink-3">
-        <span>{health?.calibrated ? `${health.zones ?? 0} zonas proyectadas` : 'Calibración de piso pendiente'}</span>
+        <span>{health?.calibration_revision ? `${health.zones ?? 0} zonas proyectadas` : 'Calibración de piso pendiente'}</span>
         {online && health?.backend_ok === false && <span className="text-bad">La cámara funciona, pero no alcanza el backend.</span>}
         <div className="ml-auto flex flex-wrap gap-1.5">
           {camera?.configured && (
@@ -204,15 +208,20 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
               {view === 'annotated' ? 'Ver limpia' : 'Ver detección'}
             </button>
           )}
+          {enableMapping && camera?.provider_mode === 'managed' && floorPlan && (
+            <button type="button" className="btn btn-sm" disabled={!online} onClick={() => setCalibrating(true)}>
+              <Crosshair size={12} /> Calibrar piso
+            </button>
+          )}
           {enableMapping && camera?.configured && (
             <button
               type="button" className="btn btn-sm btn-primary"
-              disabled={!online || !health?.calibrated || !floorPlan}
-              title={!health?.calibrated ? 'Primero calibra cuatro puntos del piso' : 'Dibujar departamentos, zonas o líneas'}
+              disabled={!online || !health?.calibration_revision || !floorPlan}
+              title={!health?.calibration_revision ? 'Primero valida la calibración de esta cámara' : 'Dibujar departamentos, zonas o líneas'}
               onClick={() => setMapping(true)}
             ><MapPinned size={12} /> Mapear áreas</button>
           )}
-          {camera?.floor_stream_url && (
+          {online && health?.calibration_revision && camera?.floor_stream_url && (
             <button type="button" className="btn btn-sm btn-ghost" onClick={() => openStream(camera.floor_stream_url)}>
               Plano <ExternalLink size={12} />
             </button>
@@ -224,10 +233,15 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
           )}
         </div>
       </footer>
-      {mapping && floorPlan && camera && (
+      {calibrating && floorPlan && camera && (
+        <CameraCalibrationEditor camera={camera} floor={floorPlan} onClose={() => setCalibrating(false)}
+          onSaved={() => { void onLayoutChanged(); }} />
+      )}
+      {mapping && floorPlan && camera && health?.calibration_revision && (
         <CameraMapEditor
           floorPlan={floorPlan} zones={zones} lines={lines} stations={stations}
-          snapshotUrl={camera.snapshot_url} mapUrl={camera.map_url}
+          key={health.calibration_revision} snapshotUrl={camera.snapshot_url} mapUrl={camera.map_url}
+          revision={health.calibration_revision} cameraId={camera.camera_id}
           onClose={() => setMapping(false)} onSaved={onLayoutChanged}
         />
       )}

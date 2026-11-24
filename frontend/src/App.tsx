@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header';
 import { Sidebar, Page, PAGES } from './components/Sidebar';
 import { FloorPlan2D } from './components/FloorPlan2D';
@@ -8,7 +8,6 @@ import { KpiStrip, StationTablePanel, AlertsPanel, StopsPanel, SourcesStrip } fr
 import { StopsModal } from './components/StopsModal';
 import { ModuleCatalogModal } from './components/ModuleCatalogModal';
 import { AlertsManagerModal } from './components/AlertsManagerModal';
-import { CalibrationModal } from './components/CalibrationModal';
 import { ExportModal } from './components/ExportModal';
 import { LayoutEditor } from './components/LayoutEditor';
 import { InteriorEditor } from './components/InteriorEditor';
@@ -29,7 +28,6 @@ import {
   AlertRuleConfig,
   MetricsSummary,
   CatalogModule,
-  ScaleCalibration,
   Layout,
   Line,
   SpatialLayer,
@@ -45,6 +43,9 @@ const pageFromHash = (): Page => {
   const h = window.location.hash.replace(/^#\/?/, '') as Page;
   return PAGES.some((p) => p.id === h) ? h : 'planta';
 };
+
+type LiveTracks = Record<string, { x: number; y: number; name: string }>;
+const NO_TRACKS: LiveTracks = {};
 
 export const App: React.FC = () => {
   // Navegación y contexto
@@ -75,12 +76,15 @@ export const App: React.FC = () => {
   const [mapRequestVersion, setMapRequestVersion] = useState(0);
 
   const [tickTime, setTickTime] = useState<number | undefined>(undefined);
-  const [tracks, setTracks] = useState<Record<string, { x: number; y: number; name: string }>>({});
+  const [trackBatch, setTrackBatch] = useState<{ key: string; tracks: LiveTracks } | null>(null);
+  const tracks = trackBatch && trackBatch.key === floorPlan?.calibration.revision_key ? trackBatch.tracks : NO_TRACKS;
+  const telemetryGeneration = useRef(0);
+  const layoutRequest = useRef(0);
 
   // Editores y modales
   const [layoutDraft, setLayoutDraft] = useState<Layout | null>(null);
   const [interiorZoneId, setInteriorZoneId] = useState<string | null>(null);
-  const [modal, setModal] = useState<null | 'stop' | 'modules' | 'rules' | 'export' | 'calib'>(null);
+  const [modal, setModal] = useState<null | 'stop' | 'modules' | 'rules' | 'export'>(null);
   const [justifying, setJustifying] = useState<Stop | null>(null);
 
   /* ── navegación por hash (#/metricas, #/dispositivos…) ── */
@@ -97,7 +101,9 @@ export const App: React.FC = () => {
 
   /* ── carga ── */
   const refreshLayout = useCallback(async () => {
+    const request = ++layoutRequest.current;
     const [fpList, zonesList, stationsList, linesList] = await Promise.all([api.listFloorPlans(), api.listZones(), api.listStations(), api.listLines()]);
+    if (request !== layoutRequest.current) return;
     if (fpList.length > 0) setFloorPlan(fpList[0]);
     setZones(zonesList);
     setStations(stationsList);
@@ -106,17 +112,22 @@ export const App: React.FC = () => {
   }, []);
 
   const refreshAnalytics = useCallback(() => {
-    api.getAnalytics(lineId, windowMinutes).then(setAnalytics).catch(console.error);
-    api.getMetrics(windowMinutes, lineId).then(setMetrics).catch(console.error);
+    const generation = telemetryGeneration.current;
+    api.getAnalytics(lineId, windowMinutes).then((data) => { if (generation === telemetryGeneration.current) setAnalytics(data); }).catch(console.error);
+    api.getMetrics(windowMinutes, lineId).then((data) => { if (generation === telemetryGeneration.current) setMetrics(data); }).catch(console.error);
   }, [lineId, windowMinutes]);
 
   const refreshSpatial = useCallback(() => {
+    const generation = telemetryGeneration.current;
     api.getSpatialSummary('plant', null, windowMinutes)
       .then((value) => {
+        if (generation !== telemetryGeneration.current) return;
         setSpatial(value);
         setSpatialError(null);
       })
-      .catch((error) => setSpatialError(error instanceof Error ? error.message : 'Error desconocido'));
+      .catch((error) => {
+        if (generation === telemetryGeneration.current) setSpatialError(error instanceof Error ? error.message : 'Error desconocido');
+      });
   }, [windowMinutes]);
 
   const refreshDevices = useCallback(() => api.listDevices().then(setDevices).catch(console.error), []);
@@ -185,8 +196,17 @@ export const App: React.FC = () => {
     };
     const off = wsClient.subscribe((msg) => {
       if (msg.type === 'TRACKS') {
-        if (msg.tracks) setTracks(msg.tracks);
+        if (msg.tracks && typeof msg.calibration_key === 'string') setTrackBatch({ key: msg.calibration_key, tracks: msg.tracks });
         if (msg.observed_at) setTickTime(Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(msg.observed_at) ? msg.observed_at : `${msg.observed_at}Z`));
+      } else if (msg.type === 'CALIBRATION_CHANGED') {
+        telemetryGeneration.current++;
+        setTrackBatch(null);
+        setMetrics(null);
+        setAnalytics(null);
+        setSpatial(null);
+        refreshLayout().catch(console.error);
+        refreshAnalytics();
+        refreshSpatial();
       } else if (msg.type === 'LAYOUT_UPDATED') {
         refreshLayout().catch(console.error);
       } else if (msg.type === 'DEVICE_CONNECTED') {
@@ -204,7 +224,7 @@ export const App: React.FC = () => {
       clearInterval(slow);
       if (pending !== null) clearTimeout(pending);
     };
-  }, [refreshLayout, refreshDevices, refreshCameras, loadAll]);
+  }, [refreshLayout, refreshDevices, refreshCameras, loadAll, refreshAnalytics, refreshSpatial]);
 
   /* ── acciones ── */
   const changeLine = (id: string) => {
@@ -234,10 +254,6 @@ export const App: React.FC = () => {
     await api.updateAlertRule(ruleId, ruleData);
     setAlertRules(await api.listAlertRules());
   };
-  const handleUpdateCalibration = async (calib: ScaleCalibration) => {
-    if (floorPlan) setFloorPlan(await api.updateCalibration(floorPlan.id, calib));
-  };
-
   const openLayoutEditor = async () => {
     try {
       setLayoutDraft(await api.getLayout());
@@ -417,7 +433,6 @@ export const App: React.FC = () => {
         devicesOnline={realDevices.filter((d) => d.status === 'online').length}
         devicesReal={realDevices.length}
         devicesPending={pendingDevices}
-        onOpenCalibration={() => setModal('calib')}
         onOpenModules={() => setModal('modules')}
         onOpenExport={() => setModal('export')}
       />
@@ -472,22 +487,6 @@ export const App: React.FC = () => {
         onResolveAlert={handleResolveAlert}
         onUpdateRule={handleUpdateRule}
       />
-      {modal === 'calib' && (
-        <CalibrationModal
-          isOpen
-          onClose={() => setModal(null)}
-          calibration={
-            floorPlan?.calibration || {
-              is_calibrated: false,
-              point1: [0.05, 0.5],
-              point2: [0.95, 0.5],
-              real_distance_meters: 36.0,
-              meters_per_norm_unit: 40.0,
-            }
-          }
-          onSave={handleUpdateCalibration}
-        />
-      )}
       <ExportModal isOpen={modal === 'export'} onClose={() => setModal(null)} />
       {justifying && (
         <JustifyStopModal

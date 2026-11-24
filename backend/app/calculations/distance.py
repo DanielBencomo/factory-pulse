@@ -11,7 +11,7 @@ class TrajectoryPoint:
 
 def calculate_trajectory_distance(
     points: List[TrajectoryPoint],
-    calibration_scale_meters: Optional[float] = None, # meters per 1.0 norm distance
+    floor_dimensions_m: Optional[Tuple[float, float]] = None,
     jitter_threshold_norm: float = 0.005, # 0.5% of floor width threshold
     max_speed_norm_per_sec: float = 0.35 # max plausible speed in normalized units/s (approx 14 m/s in a 40m floor)
 ) -> Dict[str, Any]:
@@ -25,15 +25,16 @@ def calculate_trajectory_distance(
     if len(points) < 2:
         return {
             "raw_distance_norm": 0.0,
-            "calibrated_meters": 0.0 if calibration_scale_meters else None,
-            "is_calibrated": calibration_scale_meters is not None,
+            "calibrated_meters": None,
+            "is_calibrated": floor_dimensions_m is not None,
             "sample_count": len(points),
             "jitter_filtered_count": 0,
             "speed_outlier_count": 0,
-            "speed_avg_m_s": 0.0
+            "speed_avg_m_s": None
         }
 
     total_norm_dist = 0.0
+    total_m = 0.0
     jitter_count = 0
     outlier_count = 0
     valid_segments_count = 0
@@ -49,7 +50,11 @@ def calculate_trajectory_distance(
         dy = curr_point.y - last_valid_point.y
         step_dist = math.sqrt(dx * dx + dy * dy)
         
-        dt = max(0.001, (curr_point.timestamp - last_valid_point.timestamp).total_seconds())
+        dt = (curr_point.timestamp - last_valid_point.timestamp).total_seconds()
+        if not 0 < dt <= 10:
+            last_valid_point = curr_point
+            continue
+        step_m = math.hypot(dx * floor_dimensions_m[0], dy * floor_dimensions_m[1]) if floor_dimensions_m else None
 
         # 1. Jitter filter check
         if step_dist < jitter_threshold_norm:
@@ -58,19 +63,21 @@ def calculate_trajectory_distance(
 
         # 2. Speed outlier filter check
         speed_norm_s = step_dist / dt
-        if speed_norm_s > max_speed_norm_per_sec:
+        too_fast = step_m / dt > 4.5 if step_m is not None else speed_norm_s > max_speed_norm_per_sec
+        if too_fast:
             outlier_count += 1
             # Skip glitch teleport point
             continue
 
         # Valid point transition
         total_norm_dist += step_dist
+        total_m += step_m or 0.0
         total_time_delta_sec += dt
         valid_segments_count += 1
         last_valid_point = curr_point
 
-    is_calibrated = calibration_scale_meters is not None and calibration_scale_meters > 0
-    calibrated_meters = total_norm_dist * calibration_scale_meters if is_calibrated else None
+    is_calibrated = floor_dimensions_m is not None
+    calibrated_meters = total_m if is_calibrated and valid_segments_count else None
     
     speed_avg_m_s = None
     if is_calibrated and total_time_delta_sec > 0 and calibrated_meters is not None:

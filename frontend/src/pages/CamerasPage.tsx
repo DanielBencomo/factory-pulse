@@ -20,7 +20,6 @@ type CameraForm = {
   webcam_index: string;
   rtsp_transport: 'tcp' | 'udp';
   provider_url: string;
-  calibration_path: string;
   profile: DetectionProfile;
   auto_start: boolean;
   show_annotations: boolean;
@@ -29,7 +28,6 @@ type CameraForm = {
 const emptyForm = (): CameraForm => ({
   camera_id: '', name: '', source_type: 'rtsp', scheme: 'rtsp', host: '', port: '554', path: '/stream1',
   username: '', password: '', webcam_index: '0', rtsp_transport: 'tcp', provider_url: '',
-  calibration_path: '',
   profile: 'balanced', auto_start: true, show_annotations: true,
 });
 
@@ -47,7 +45,6 @@ const formFromCamera = (camera: CameraConfig): CameraForm => {
   form.webcam_index = String(camera.webcam_index ?? 0);
   form.rtsp_transport = camera.rtsp_transport ?? 'tcp';
   form.provider_url = camera.provider_url ?? '';
-  form.calibration_path = camera.calibration_path ?? '';
   form.auto_start = camera.auto_start;
   form.show_annotations = camera.show_annotations;
   if (camera.source_url) {
@@ -132,7 +129,6 @@ export const CamerasPage: React.FC<Props> = ({
       webcam_index: Number(form.webcam_index || 0),
       rtsp_transport: form.rtsp_transport,
       provider_url: form.source_type === 'provider' ? form.provider_url.trim() : null,
-      calibration_path: form.source_type === 'provider' ? null : form.calibration_path.trim() || null,
       profile: form.profile,
       auto_start: form.auto_start,
       show_annotations: form.show_annotations,
@@ -273,14 +269,6 @@ export const CamerasPage: React.FC<Props> = ({
             )}
             {form.source_type === 'provider' && (
               <div className="max-w-xl"><label className="label">URL HTTP del proveedor</label><input className="field num" required placeholder="http://192.168.1.64:8101" value={form.provider_url} onChange={(e) => setForm({ ...form, provider_url: e.target.value })} /></div>
-            )}
-
-            {form.source_type !== 'provider' && (
-              <div className="max-w-xl">
-                <label className="label">Archivo de calibración (opcional)</label>
-                <input className="field num" placeholder="calib-planta.json" value={form.calibration_path} onChange={(e) => setForm({ ...form, calibration_path: e.target.value })} />
-                <p className="text-[11px] text-ink-3 mt-1">Necesario para proyectar zonas y posiciones con precisión sobre el plano.</p>
-              </div>
             )}
 
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px]">

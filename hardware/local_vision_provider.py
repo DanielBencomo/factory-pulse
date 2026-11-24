@@ -40,7 +40,7 @@ from http import HTTPStatus
 from importlib.metadata import version as package_version
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 try:
     import requests
@@ -332,6 +332,9 @@ class FloorCalibration:
         self.width_m = 8.0
         self.height_m = 5.0
         self.image_points: list[list[float]] = []
+        self.registration: dict[str, Any] | None = None
+        self.revision: str | None = None
+        self.frame_size = (0, 0)
         if path:
             self.load(path)
 
@@ -352,19 +355,52 @@ class FloorCalibration:
         self.image_points = data.get("image_points", [])
         log(f"calibración cargada: {path} ({self.width_m:g} × {self.height_m:g} m)")
 
+    def use_registration(self, data: dict[str, Any] | None, frame_w: int, frame_h: int) -> bool:
+        """Returns whether the applied revision changed. A different aspect ratio fails closed."""
+        previous = self.revision
+        self.frame_size = (frame_w, frame_h)
+        if data is not None:
+            ratio = (frame_w * data["image_height"]) / (frame_h * data["image_width"])
+            if not 0.99 <= ratio <= 1.01:
+                data = None
+        self.revision = data["revision"] if data else None
+        if previous != self.revision:
+            self.registration = data
+            self.homography = self.np.asarray(data["matrix"], dtype="float64") if data else None
+            self.inverse = self.np.asarray(data["inverse"], dtype="float64") if data else None
+            if data:
+                self.width_m, self.height_m = data["width_m"], data["height_m"]
+        return previous != self.revision
+
+    def _inside_image(self, x: float, y: float) -> bool:
+        if not self.registration:
+            return True
+        hull = self.registration["image_hull"]
+        sides = [
+            (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0])
+            for a, b in zip(hull, hull[1:] + hull[:1])
+        ]
+        return min(sides) >= -1e-8 or max(sides) <= 1e-8
+
     @staticmethod
     def _transform(matrix: Any, x: float, y: float) -> tuple[float, float] | None:
         projected = matrix @ [x, y, 1.0]
-        if abs(projected[2]) < 1e-9:
+        if not all(math.isfinite(value) for value in projected) or abs(projected[2]) < 1e-9:
             return None
         return float(projected[0] / projected[2]), float(projected[1] / projected[2])
 
     def camera_to_floor(self, x: float, y: float, frame_w: int, frame_h: int) -> tuple[float, float]:
         if self.homography is None:
             return x / max(frame_w, 1), y / max(frame_h, 1)
+        if self.registration:
+            x, y = x / frame_w, y / frame_h
+            if not self._inside_image(x, y):
+                return -1.0, -1.0
         point = self._transform(self.homography, x, y)
         if point is None:
             return -1.0, -1.0
+        if self.registration:
+            return tuple(max(0.0, min(1.0, value)) for value in point)
         return point
 
     def floor_to_camera(self, x: float, y: float) -> tuple[int, int] | None:
@@ -373,6 +409,10 @@ class FloorCalibration:
         point = self._transform(self.inverse, x, y)
         if point is None:
             return None
+        if self.registration:
+            if not self._inside_image(*point):
+                return None
+            return round(point[0] * self.frame_size[0]), round(point[1] * self.frame_size[1])
         return round(point[0]), round(point[1])
 
     def map_normalized_points(
@@ -405,6 +445,29 @@ class FloorCalibration:
             else:
                 raise ValueError("direction debe ser camera_to_floor o floor_to_camera")
         return output
+
+
+class CalibrationClient:
+    def __init__(self, api_base: str, camera_id: str) -> None:
+        self.url = f"{api_base.rstrip('/')}/api/cameras/{quote(camera_id, safe='')}/calibration"
+        self._next_refresh = 0.0
+        self._session = requests.Session()
+        self.current: dict[str, Any] | None = None
+
+    def refresh_if_due(self) -> dict[str, Any] | None:
+        now = time.monotonic()
+        if now >= self._next_refresh:
+            self._next_refresh = now + 3
+            try:
+                response = self._session.get(self.url, timeout=1)
+                response.raise_for_status()
+                self.current = response.json()["calibration"]
+            except (requests.RequestException, ValueError, TypeError, KeyError):
+                self.current = None
+        return self.current
+
+    def close(self) -> None:
+        self._session.close()
 
 
 class ZoneClient:
@@ -589,6 +652,7 @@ class EventPublisher:
                 "confidence": round(float(position["confidence"]), 4),
                 "source": "vision_yolo_bytetrack",
                 "coordinate_space": "floor",
+                "calibration_revision": position["calibration_revision"],
             }
             if position.get("speed_m_s") is not None:
                 payload["speed_m_s"] = round(float(position["speed_m_s"]), 3)
@@ -619,6 +683,8 @@ class EventPublisher:
                     str(zone_id): max(0, int(count))
                     for zone_id, count in occupancy["counts"].items()
                 }
+            if occupancy.get("calibration_revision"):
+                payload["calibration_revision"] = occupancy["calibration_revision"]
             batch.append(
                 {
                     "event_id": f"occ-{uuid.uuid4().hex}",
@@ -723,9 +789,8 @@ class VisionRenderer:
             detection.floor_x, detection.floor_y = x, y
             if not (-0.05 <= x <= 1.05 and -0.05 <= y <= 1.05):
                 continue
-            detection.zone = next(
-                (zone for zone in zones if point_in_polygon(x, y, zone.polygon)), None
-            )
+            matches = [zone for zone in zones if point_in_polygon(x, y, zone.polygon)]
+            detection.zone = next((zone for zone in matches if zone.is_aggregated_only), matches[0] if matches else None)
             if not detection.confirmed:
                 continue
             previous_speed = self._last_speed_position.get(detection.track_id)
@@ -967,6 +1032,11 @@ class VisionRenderer:
         )
         return canvas
 
+    def reset_trails(self) -> None:
+        self.trails.clear()
+        self._last_position.clear()
+        self._last_speed_position.clear()
+
     def handle_key(self, key: int, zones: list[Zone]) -> bool:
         key &= 0xFF
         if key in (ord("q"), 27):
@@ -994,9 +1064,7 @@ class VisionRenderer:
             self.selected_zone = zone_ids[(index + 1) % len(zone_ids)]
             log(f"filtro de zona: {self.selected_zone or 'todas'}")
         elif key == ord("r"):
-            self.trails.clear()
-            self._last_position.clear()
-            self._last_speed_position.clear()
+            self.reset_trails()
             log("trayectorias reiniciadas")
         return False
 
@@ -1027,6 +1095,7 @@ class FrameHub:
             "calibrated": False,
             "frame_width": 0,
             "frame_height": 0,
+            "session_id": uuid.uuid4().hex,
         }
 
     def update(self, camera: Any, floor: Any, raw: Any | None = None, **status: Any) -> None:
@@ -1061,9 +1130,10 @@ class FrameHub:
             frame = self._floor_jpeg if view == "floor" else self._raw_jpeg if view == "raw" else self._camera_jpeg
             return self._sequence, frame
 
-    def snapshot(self, view: str) -> bytes | None:
+    def snapshot(self, view: str) -> tuple[bytes | None, dict[str, Any]]:
         with self._lock:
-            return self._floor_jpeg if view == "floor" else self._raw_jpeg if view == "raw" else self._camera_jpeg
+            jpeg = self._floor_jpeg if view == "floor" else self._raw_jpeg if view == "raw" else self._camera_jpeg
+            return jpeg, dict(self._status)
 
 
 class VisionHTTPServer:
@@ -1085,7 +1155,7 @@ class VisionHTTPServer:
             def log_message(self, _format: str, *_args: Any) -> None:
                 return
 
-            def _headers(self, status: int, content_type: str, length: int | None = None) -> None:
+            def _headers(self, status: int, content_type: str, length: int | None = None, extra: dict[str, str] | None = None) -> None:
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -1095,6 +1165,8 @@ class VisionHTTPServer:
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                 if length is not None:
                     self.send_header("Content-Length", str(length))
+                for name, value in (extra or {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
 
             def _mjpeg(self, view: str) -> None:
@@ -1127,11 +1199,14 @@ class VisionHTTPServer:
                     self._mjpeg("floor")
                 elif path in {"/vision/snapshot.jpg", "/vision/raw.jpg", "/vision/floor.jpg"}:
                     view = "floor" if path.endswith("floor.jpg") else "raw" if path.endswith("raw.jpg") else "annotated"
-                    body = hub.snapshot(view)
+                    body, state = hub.snapshot(view)
                     if body is None:
                         self._headers(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain", 0)
                     else:
-                        self._headers(HTTPStatus.OK, "image/jpeg", len(body))
+                        self._headers(HTTPStatus.OK, "image/jpeg", len(body), {
+                            "X-Frame-Session": state["session_id"], "X-Frame-Time": state["updated_at"],
+                            "X-Frame-Width": str(state["frame_width"]), "X-Frame-Height": str(state["frame_height"]),
+                        })
                         self.wfile.write(body)
                 else:
                     body = b"Factory Pulse Vision"
@@ -1266,6 +1341,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plant-width", type=float, default=8.0, help="ancho real del plano en metros")
     parser.add_argument("--plant-height", type=float, default=5.0, help="alto real del plano en metros")
     parser.add_argument("--calib", default=None, help="JSON de homografía existente")
+    parser.add_argument("--managed-calibration", action="store_true", help="usa la calibración administrada por el backend")
     parser.add_argument("--calibrate", metavar="ARCHIVO", help="selecciona cuatro puntos, guarda JSON y sale")
     parser.add_argument("--probe-source", action="store_true", help="prueba la fuente, muestra metadatos y sale")
     parser.add_argument("--rtsp-transport", choices=("tcp", "udp"), default="tcp")
@@ -1328,7 +1404,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         finally:
             video.close()
 
-    calibration = FloorCalibration(args.calib)
+    calibration = FloorCalibration(None if args.managed_calibration else args.calib)
+    calibration_client = CalibrationClient(args.api, args.device_id) if args.managed_calibration else None
     if not calibration.calibrated:
         calibration.width_m = args.plant_width
         calibration.height_m = args.plant_height
@@ -1337,7 +1414,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     zone_client = ZoneClient(args.api, args.zone_refresh)
     zones = zone_client.refresh_if_due(force=True)
-    prefix = "".join(char if char.isalnum() else "-" for char in args.device_id).strip("-") or "CAM"
+    prefix = args.device_id
     tracker = YoloByteTracker(
         args.model,
         args.tracker,
@@ -1380,14 +1457,20 @@ def main(argv: Iterable[str] | None = None) -> int:
             detections = tracker.detect(frame)
 
             zones = zone_client.refresh_if_due()
-            renderer.locate(detections, frame.shape, zones)
+            if calibration_client and calibration.use_registration(
+                calibration_client.refresh_if_due(), frame.shape[1], frame.shape[0]
+            ):
+                renderer.reset_trails()
+            geometry_zones = zones if calibration.calibrated else []
+            if calibration.calibrated:
+                renderer.locate(detections, frame.shape, geometry_zones)
             elapsed = max(frame_started - previous_frame_at, 1e-6)
             instantaneous_fps = 1.0 / elapsed
             smoothed_fps = instantaneous_fps if smoothed_fps == 0 else (0.90 * smoothed_fps + 0.10 * instantaneous_fps)
             previous_frame_at = frame_started
 
-            annotated = renderer.camera_frame(frame, detections, zones, smoothed_fps)
-            floor = renderer.floor_frame(detections, zones)
+            annotated = renderer.camera_frame(frame, detections, geometry_zones, smoothed_fps)
+            floor = renderer.floor_frame(detections, geometry_zones)
             hub.update(
                 annotated,
                 floor,
@@ -1395,8 +1478,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 fps=round(smoothed_fps, 1),
                 tracks=sum(1 for item in detections if item.confirmed),
                 detections=len(detections),
-                zones=len(zones),
+                zones=len(geometry_zones),
                 calibrated=calibration.calibrated,
+                calibration_revision=calibration.revision,
                 backend_ok=publisher.last_ok_at is not None and time.time() - publisher.last_ok_at < 15,
                 uptime_seconds=round(time.monotonic() - started),
             )
@@ -1405,7 +1489,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             if now - last_publish_at >= args.publish_interval:
                 positions = []
                 zone_counts: Counter[str] = Counter()
-                for detection in (detections if calibration.calibrated else []):
+                for detection in (detections if calibration.revision else []):
                     x, y = detection.floor_x, detection.floor_y
                     if x is None or y is None or not (0 <= x <= 1 and 0 <= y <= 1):
                         continue
@@ -1418,6 +1502,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     positions.append(
                         {
                             "track_id": detection.track_id,
+                            "calibration_revision": calibration.revision,
                             "x": x,
                             "y": y,
                             "confidence": detection.confidence,
@@ -1430,7 +1515,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "zone_id": "__plant__",
                     "count": len(detections),
                     "counts": dict(zone_counts),
-                    "coordinate_space": "floor" if calibration.calibrated else "image",
+                    "coordinate_space": "floor" if calibration.revision else "image",
+                    "calibration_revision": calibration.revision,
                 }], video.delivered_frame_at)
                 last_publish_at = now
 
@@ -1444,6 +1530,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     finally:
         video.close()
         publisher.close()
+        if calibration_client:
+            calibration_client.close()
         if stream_server:
             stream_server.close()
         cv2.destroyAllWindows()

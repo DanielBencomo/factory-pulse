@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import socket
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -14,11 +14,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cameras.manager import camera_manager, provider_base
+from app.cameras.calibration import (
+    CalibrationInput, ProjectionInput, active_calibration, fit_calibration,
+    frame_revision, inside, main_floor, project, source_geometry,
+)
 from app.cameras.security import encrypt_secret
 from app.config import settings
 from app.database import get_db
 from app.devices.registry import device_status
 from app.models.db_models import DBAuditLog, DBCameraConfig, DBDevice
+from app.ws.manager import ws_manager
 
 router = APIRouter()
 
@@ -54,7 +59,6 @@ class CameraIn(BaseModel):
     webcam_index: int = Field(0, ge=0, le=32)
     rtsp_transport: Literal["tcp", "udp"] = "tcp"
     provider_url: Optional[str] = None
-    calibration_path: Optional[str] = Field(None, max_length=512)
     profile: Literal["fast", "balanced", "precision"] = "balanced"
     model: Optional[str] = Field(None, max_length=64)
     confidence: Optional[float] = Field(None, ge=0.05, le=0.95)
@@ -77,7 +81,6 @@ class CameraPatch(BaseModel):
     webcam_index: Optional[int] = Field(None, ge=0, le=32)
     rtsp_transport: Optional[Literal["tcp", "udp"]] = None
     provider_url: Optional[str] = None
-    calibration_path: Optional[str] = Field(None, max_length=512)
     profile: Optional[Literal["fast", "balanced", "precision"]] = None
     model: Optional[str] = Field(None, max_length=64)
     confidence: Optional[float] = Field(None, ge=0.05, le=0.95)
@@ -171,7 +174,6 @@ def _out(device: DBDevice, camera: DBCameraConfig | None) -> dict[str, Any]:
         "provider_mode": camera.provider_mode if camera else None,
         "provider_url": camera.provider_url if camera and camera.provider_mode == "external" else None,
         "provider_port": camera.provider_port if camera else None,
-        "calibration_path": camera.calibration_path if camera else None,
         "profile": camera.profile if camera else "balanced",
         "model": camera.model if camera else None,
         "confidence": camera.confidence if camera else None,
@@ -258,7 +260,6 @@ async def register_camera(payload: CameraIn, session: AsyncSession = Depends(get
         ) if payload.source_type not in {"provider", "webcam"} else None,
         webcam_index=payload.webcam_index, rtsp_transport=payload.rtsp_transport,
         provider_mode=provider_mode, provider_url=provider_url, provider_port=provider_port,
-        calibration_path=payload.calibration_path.strip() if payload.calibration_path else None,
         profile=payload.profile, model=payload.model or profile["model"],
         confidence=payload.confidence if payload.confidence is not None else profile["confidence"],
         iou=payload.iou if payload.iou is not None else profile["iou"],
@@ -282,6 +283,8 @@ async def register_camera(payload: CameraIn, session: AsyncSession = Depends(get
 @router.put("/cameras/{camera_id}")
 async def update_camera(camera_id: str, payload: CameraPatch, session: AsyncSession = Depends(get_db)):
     camera = await _camera(session, camera_id)
+    previous_geometry = source_geometry(camera)
+    previously_enabled = camera.enabled
     device = (await session.execute(select(DBDevice).where(DBDevice.device_id == camera_id))).scalar_one()
     data = payload.model_dump(exclude_unset=True)
     if "name" in data:
@@ -317,13 +320,15 @@ async def update_camera(camera_id: str, payload: CameraPatch, session: AsyncSess
     for field, key in (("model", "model"), ("confidence", "confidence"), ("iou", "iou"), ("image_size", "image_size"), ("processing_width", "width"), ("processing_height", "height")):
         if ("profile" in data and field not in data) or (field in data and data[field] is None):
             data[field] = profile[key]
-    if "calibration_path" in data and data["calibration_path"]:
-        data["calibration_path"] = data["calibration_path"].strip() or None
     for key, value in data.items():
         setattr(camera, key, value)
+    if source_geometry(camera) != previous_geometry:
+        camera.calibration_data = None
     camera.updated_at = datetime.utcnow()
     await session.commit()
     camera_manager.stop(camera_id)
+    if source_geometry(camera) != previous_geometry or camera.enabled != previously_enabled:
+        await ws_manager.broadcast({"type": "CALIBRATION_CHANGED"})
     if camera.auto_start and camera.enabled:
         try:
             camera_manager.start(camera)
@@ -346,6 +351,7 @@ async def delete_camera(camera_id: str, session: AsyncSession = Depends(get_db))
     if device and not device.simulated:
         await session.delete(device)
     await session.commit()
+    await ws_manager.broadcast({"type": "CALIBRATION_CHANGED"})
 
 
 @router.post("/cameras/{camera_id}/start")
@@ -391,6 +397,12 @@ async def camera_health(camera_id: str, session: AsyncSession = Depends(get_db))
             body = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f"Proveedor sin conexión: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(503, "Respuesta de estado inválida")
+    data = active_calibration(camera, await main_floor(session))
+    applied = bool(data and data["revision"] == body.get("calibration_revision"))
+    body["calibrated"] = applied
+    body["calibration_revision"] = data["revision"] if applied else None
     body["camera_id"] = camera_id
     body["runtime"] = camera_manager.status(camera_id)
     return body
@@ -432,22 +444,104 @@ async def camera_snapshot(camera_id: str, raw: bool = False, session: AsyncSessi
             upstream.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"Snapshot no disponible: {exc}") from exc
-    return Response(content=upstream.content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store"}
+    for key in ("X-Frame-Session", "X-Frame-Time", "X-Frame-Width", "X-Frame-Height"):
+        if key in upstream.headers:
+            headers[key] = upstream.headers[key]
+    return Response(content=upstream.content, media_type="image/jpeg", headers=headers)
+
+
+@router.get("/cameras/{camera_id}/calibration")
+async def get_camera_calibration(camera_id: str, session: AsyncSession = Depends(get_db)):
+    camera = await _camera(session, camera_id)
+    floor = await main_floor(session)
+    return {
+        "calibration": active_calibration(camera, floor),
+        "frame_revision": frame_revision(floor) if floor else None,
+        "width_m": floor.width_meters if floor else None,
+        "height_m": floor.height_meters if floor else None,
+    }
+
+
+@router.put("/cameras/{camera_id}/calibration")
+async def save_camera_calibration(camera_id: str, payload: CalibrationInput, session: AsyncSession = Depends(get_db)):
+    camera = await _camera(session, camera_id)
+    requested_geometry = source_geometry(camera)
+    if camera.provider_mode != "managed" or not camera.enabled:
+        raise HTTPException(409, "La calibración requiere un proveedor administrado")
+    state = await camera_health(camera_id, session)
+    try:
+        current = datetime.fromisoformat(state["updated_at"])
+        captured = datetime.fromisoformat(payload.snapshot_at)
+        now = datetime.now(timezone.utc)
+        aspect_ratio = (state["frame_width"] * payload.image_height) / (state["frame_height"] * payload.image_width)
+        compatible = (
+            state.get("session_id") == payload.snapshot_session
+            and 0.99 <= aspect_ratio <= 1.01 and captured <= current
+            and 0 <= (now - current).total_seconds() <= 10
+        )
+    except (KeyError, ValueError, TypeError, ZeroDivisionError):
+        compatible = False
+    if not compatible:
+        raise HTTPException(409, "Cambió la sesión o el formato del video. Toma otra captura")
+
+    await session.refresh(camera)
+    floor = await main_floor(session)
+    if not camera.enabled or source_geometry(camera) != requested_geometry:
+        raise HTTPException(409, "Cambió la configuración de video. Toma otra captura")
+    if not floor or payload.frame_revision != frame_revision(floor):
+        raise HTTPException(409, "Cambió el plano. Vuelve a tomar la captura")
+    try:
+        fit = fit_calibration(payload, floor.width_meters, floor.height_meters)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if fit["max_error_m"] > payload.tolerance_m:
+        raise HTTPException(422, f"Desviación máxima: {fit['max_error_m']:.3f} m; tolerancia: {payload.tolerance_m:.3f} m")
+    now = datetime.now(timezone.utc)
+    data = {
+        **payload.model_dump(mode="json"), **fit, "revision": uuid.uuid4().hex,
+        "width_m": floor.width_meters, "height_m": floor.height_meters,
+        "saved_at": now.isoformat(),
+    }
+    camera.calibration_data = data
+    session.add(DBAuditLog(
+        action="CALIBRATE_CAMERA", actor="Dashboard", entity_type="CAMERA", entity_id=camera_id,
+        details={"revision": data["revision"], "max_error_m": fit["max_error_m"]},
+    ))
+    await session.commit()
+    await ws_manager.broadcast({"type": "CALIBRATION_CHANGED"})
+    return data
+
+
+@router.delete("/cameras/{camera_id}/calibration", status_code=204)
+async def clear_camera_calibration(camera_id: str, session: AsyncSession = Depends(get_db)):
+    camera = await _camera(session, camera_id)
+    if not camera.calibration_data:
+        return
+    session.add(DBAuditLog(
+        action="INVALIDATE_CAMERA_CALIBRATION", actor="Dashboard", entity_type="CAMERA",
+        entity_id=camera_id, details={"revision": camera.calibration_data["revision"]},
+    ))
+    camera.calibration_data = None
+    await session.commit()
+    await ws_manager.broadcast({"type": "CALIBRATION_CHANGED"})
 
 
 @router.post("/cameras/{camera_id}/map-points")
-async def camera_map_points(camera_id: str, payload: dict[str, Any], session: AsyncSession = Depends(get_db)):
+async def camera_map_points(camera_id: str, payload: ProjectionInput, session: AsyncSession = Depends(get_db)):
     camera = await _camera(session, camera_id)
-    base = await _provider(camera)
+    data = active_calibration(camera, await main_floor(session))
+    if not data or payload.revision != data["revision"]:
+        raise HTTPException(409, "La calibración cambió. Vuelve a abrir el editor")
+    forward = payload.direction == "camera_to_floor"
+    hull = data["image_hull" if forward else "floor_hull"]
+    if any(not inside(p, hull) for p in payload.points):
+        raise HTTPException(422, "Todos los vértices deben quedar dentro del área calibrada")
+    matrix = data["matrix" if forward else "inverse"]
     try:
-        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
-            upstream = await client.post(f"{base}/vision/map-points", json=payload)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail=f"Proveedor no disponible: {exc}") from exc
-    try:
-        body = upstream.json()
-    except ValueError:
-        body = {"detail": "Respuesta inválida del proveedor"}
-    if upstream.status_code >= 400:
-        raise HTTPException(status_code=upstream.status_code, detail=body.get("detail", "No se pudieron proyectar los puntos"))
-    return body
+        mapped = [project(matrix, p) for p in payload.points]
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if forward:
+        mapped = [tuple(round(max(0.0, min(1.0, v)), 8) for v in p) for p in mapped]
+    return {"points": mapped, "revision": data["revision"], "calibrated": True}

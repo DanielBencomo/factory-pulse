@@ -33,10 +33,8 @@ export type ZoneType = 'work' | 'transit' | 'storage' | 'rest' | 'bathroom' | 'r
 
 export interface ScaleCalibration {
   is_calibrated: boolean;
-  point1: [number, number];
-  point2: [number, number];
-  real_distance_meters: number;
-  meters_per_norm_unit: number;
+  frame_revision: string;
+  revision_key: string;
 }
 
 export interface FloorPlan {
@@ -167,7 +165,6 @@ export interface CameraConfig {
   provider_mode?: 'managed' | 'external' | null;
   provider_url?: string | null;
   provider_port?: number | null;
-  calibration_path?: string | null;
   profile: DetectionProfile;
   model?: string | null;
   confidence?: number | null;
@@ -212,7 +209,6 @@ export interface CameraInput {
   webcam_index?: number;
   rtsp_transport?: 'tcp' | 'udp';
   provider_url?: string | null;
-  calibration_path?: string | null;
   profile?: DetectionProfile;
   auto_start?: boolean;
   show_annotations?: boolean;

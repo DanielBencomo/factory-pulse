@@ -5,15 +5,17 @@ GET /layout devuelve todo junto; PUT /layout lo reemplaza en una sola transacci�
 (alta, cambio y baja por id). Los campos de operación de una estación
 (estado, piezas del turno, último ciclo) no se tocan al editar.
 """
+import uuid
 from datetime import datetime
 from typing import Dict, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from app.database import get_db
-from app.models.db_models import DBFloorPlan, DBLine, DBPolygonZone, DBStation, DBAuditLog, DBEvent
+from app.cameras.calibration import CalibrationRef, main_floor, require_projection
+from app.models.db_models import DBFloorPlan, DBLine, DBPolygonZone, DBStation, DBAuditLog
 from app.models.schemas import LayoutPayload
 from app.ws.manager import ws_manager
 
@@ -62,6 +64,7 @@ def _station_dict(s: DBStation) -> Dict:
 class LinePolygonIn(BaseModel):
     polygon: List[List[float]] = Field(..., min_length=3)
     author: str = Field("Editor sobre cámara", max_length=128)
+    calibration_ref: CalibrationRef | None = None
 
 
 def _polygon_area(poly: List[List[float]]) -> float:
@@ -94,6 +97,8 @@ async def update_line_polygon(
     line = (await session.execute(select(DBLine).where(DBLine.id == line_id))).scalar_one_or_none()
     if not line:
         raise HTTPException(status_code=404, detail="Línea no encontrada")
+    if body.calibration_ref:
+        await require_projection(session, body.calibration_ref, line.floor_plan_id, body.polygon)
     line.polygon = body.polygon
     session.add(DBAuditLog(
         action="UPDATE_LINE_POLYGON", actor=body.author, entity_type="LINE",
@@ -106,7 +111,7 @@ async def update_line_polygon(
 
 @router.get("/layout")
 async def get_layout(session: AsyncSession = Depends(get_db)):
-    fp = (await session.execute(select(DBFloorPlan))).scalars().first()
+    fp = await main_floor(session)
     if not fp:
         raise HTTPException(status_code=404, detail="No hay plano configurado")
     lines = (await session.execute(select(DBLine).order_by(DBLine.order))).scalars().all()
@@ -179,15 +184,7 @@ async def save_layout(payload: LayoutPayload, session: AsyncSession = Depends(ge
     fp.width_meters = payload.floor_plan.width_meters
     fp.height_meters = payload.floor_plan.height_meters
     if resized:
-        # Las coordenadas son relativas a la nave: la escala horizontal sigue al ancho.
-        calib = dict(fp.calibration or {})
-        calib["meters_per_norm_unit"] = payload.floor_plan.width_meters
-        calib["real_distance_meters"] = round(payload.floor_plan.width_meters * 0.9, 2)
-        # Las posiciones anteriores están en el marco viejo; no se reescriben (son
-        # telemetría cruda), solo se marca desde cuándo aplica el marco nuevo.
-        latest = (await session.execute(select(func.max(DBEvent.occurred_at)).where(DBEvent.type == "position", DBEvent.mode == "live"))).scalar()
-        calib["frame_since"] = latest.isoformat() if latest else None
-        fp.calibration = calib
+        fp.calibration = {"frame_revision": uuid.uuid4().hex}
     fp.updated_at = datetime.utcnow()
 
     # Líneas
@@ -247,4 +244,6 @@ async def save_layout(payload: LayoutPayload, session: AsyncSession = Depends(ge
     await session.commit()
 
     await ws_manager.broadcast({"type": "LAYOUT_UPDATED"})
+    if resized:
+        await ws_manager.broadcast({"type": "CALIBRATION_CHANGED"})
     return await get_layout(session)

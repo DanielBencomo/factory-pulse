@@ -1,7 +1,7 @@
 import {
   FloorPlan, PolygonZone, Station, Device, Stop, StopReason,
   Alert, AlertRuleConfig, MetricsSummary, DashboardConfig,
-  CatalogModule, ScaleCalibration, Layout, Line, TrackPoint,
+  CatalogModule, Layout, Line, TrackPoint,
   Analytics, ConnectInfo, InteriorItem, Badge, ZoneSignals,
   OccupancySnapshot, RFIDConfig, ZoneType, SpatialSummary, CameraConfig, CameraInput, CameraProfile
 } from '../types';
@@ -50,15 +50,6 @@ export const api = {
     return res.json();
   },
 
-  async updateCalibration(planId: string, calibration: ScaleCalibration): Promise<FloorPlan> {
-    const res = await fetch(`${API_BASE}/floorplans/${planId}/calibration`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(calibration),
-    });
-    return res.json();
-  },
-
   // Zones & Stations
   async listZones(): Promise<PolygonZone[]> {
     const res = await fetch(`${API_BASE}/zones`);
@@ -69,6 +60,7 @@ export const api = {
     zone_id: string; floor_plan_id: string; name: string; type: ZoneType;
     polygon: [number, number][]; color: string; station_ids: string[];
     max_capacity?: number; is_aggregated_only: boolean; line_id?: string | null;
+    calibration_ref?: { camera_id: string; revision: string };
   }): Promise<PolygonZone> {
     const res = await fetch(`${API_BASE}/zones`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(zone),
@@ -123,9 +115,9 @@ export const api = {
     return res.json();
   },
 
-  async updateLinePolygon(lineId: string, polygon: [number, number][]): Promise<Line> {
+  async updateLinePolygon(lineId: string, polygon: [number, number][], calibration_ref?: { camera_id: string; revision: string }): Promise<Line> {
     const res = await fetch(`${API_BASE}/lines/${encodeURIComponent(lineId)}/polygon`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ polygon }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ polygon, calibration_ref }),
     });
     if (!res.ok) throw new Error(await errorText(res, 'No se pudo actualizar la línea'));
     return res.json();

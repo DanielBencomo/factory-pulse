@@ -90,26 +90,21 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
   const planH = planHeight(mPerX, mPerY);
   const FULL: VB = useMemo(() => [0, 0, PLAN_W, planH], [planH]);
 
-  /* ── historial de trayectorias: carga inicial + ticks en vivo ── */
-  useEffect(() => {
-    api.getTrackHistory(HISTORY_MINUTES).then((h) => setHistory((prev) => ({ ...h, ...mergeLive(prev, h) })));
-  }, []);
-
-
-  // Si cambian las medidas de la nave, el historial viejo queda en otro marco de coordenadas.
-  const dimsKey = floorPlan ? `${floorPlan.width_meters}x${floorPlan.height_meters}` : null;
-  const lastDims = useRef(dimsKey);
-  useEffect(() => {
-    if (!dimsKey || lastDims.current === null || lastDims.current === dimsKey) {
-      lastDims.current = dimsKey;
-      return;
-    }
-    lastDims.current = dimsKey;
-    setHistory({});
-    api.getTrackHistory(HISTORY_MINUTES).then((h) => setHistory((prev) => ({ ...h, ...mergeLive(prev, h) })));
-  }, [dimsKey]);
-
   const membership = useRef<Record<string, string | null>>({});
+  const calibrationKey = floorPlan?.calibration.revision_key;
+  useEffect(() => {
+    let active = true;
+    membership.current = {};
+    setHistory({});
+    setZoneLog([]);
+    setSelectedTrack('all');
+    if (calibrationKey) {
+      api.getTrackHistory(HISTORY_MINUTES)
+        .then((h) => { if (active) setHistory((prev) => ({ ...h, ...mergeLive(prev, h) })); })
+        .catch(console.error);
+    }
+    return () => { active = false; };
+  }, [calibrationKey]);
 
   useEffect(() => {
     const t = tickTime ?? Date.now();

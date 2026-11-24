@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.calculations.analytics import compute_line_analytics
 from app.calculations.evidence import count_value, floor_position, presence_value
 from app.database import get_db
-from app.models.db_models import DBEvent, DBFloorPlan, DBLine, DBPolygonZone, DBStation, DBStop
+from app.cameras.calibration import active_revisions, main_floor
+from app.models.db_models import DBEvent, DBLine, DBPolygonZone, DBStation, DBStop
 
 router = APIRouter()
 
@@ -43,7 +44,8 @@ async def line_analytics(
 
 
 async def _context(session: AsyncSession, line_id: str) -> dict:
-    fp = (await session.execute(select(DBFloorPlan))).scalars().first()
+    fp = await main_floor(session)
+    revisions = await active_revisions(session, fp)
     stations_db = (
         await session.execute(select(DBStation).where(DBStation.line_id == line_id).order_by(DBStation.order_in_line))
     ).scalars().all()
@@ -74,7 +76,8 @@ async def _context(session: AsyncSession, line_id: str) -> dict:
             area = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
     return {
         "line_id": line_id,
-        "calibrated": bool(fp and (fp.calibration or {}).get("is_calibrated")),
+        "calibrated": bool(revisions),
+        "revisions": revisions,
         "W": fp.width_meters if fp else 40.0,
         "H": fp.height_meters if fp else 25.0,
         "stations": stations,
@@ -91,7 +94,7 @@ async def _compute(session: AsyncSession, ctx: dict, mode: str, start: datetime,
     station_ids = ctx["station_ids"]
     rows = (
         await session.execute(
-            select(DBEvent.occurred_at, DBEvent.type, DBEvent.payload)
+            select(DBEvent.occurred_at, DBEvent.type, DBEvent.payload, DBEvent.device_id)
             .where(
                 DBEvent.type.in_(["position", "machine_state", "cycle", "presence"]),
                 DBEvent.occurred_at >= start - lead,
@@ -106,12 +109,12 @@ async def _compute(session: AsyncSession, ctx: dict, mode: str, start: datetime,
     machine: Dict[str, List] = {}
     cycles: Dict[str, List] = {}
     presence: Dict[str, List] = {}
-    for occurred_at, etype, p in rows:
+    for occurred_at, etype, p, device_id in rows:
         p = p or {}
         t = _epoch(occurred_at)
         sid = p.get("station_id") or ctx["zone_to_station"].get(p.get("zone_id", ""))
         if etype == "position":
-            position = floor_position(p)
+            position = floor_position(p, device_id, ctx['revisions'])
             if position:
                 track, x, y = position
                 positions.setdefault(track, []).append((t, x, y))

@@ -139,10 +139,9 @@ class CameraRuntimeManager:
             "--rtsp-transport", camera.rtsp_transport,
             "--stream-host", "127.0.0.1",
             "--stream-port", str(camera.provider_port),
+            "--managed-calibration",
             "--no-display",
         ]
-        if camera.calibration_path:
-            command.extend(("--calib", camera.calibration_path))
         env = os.environ.copy()
         env["FP_CAMERA_SOURCE"] = camera_source(camera)
         runtime = self.repo_root / "runtime"

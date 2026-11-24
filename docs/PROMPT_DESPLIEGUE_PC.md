@@ -72,13 +72,11 @@ Trabaja paso a paso y no des por terminado el despliegue hasta hacer las verific
    python hardware\local_vision_provider.py --source "<URL_RTSP_LOCAL>" --rtsp-transport tcp --probe-source
    Debe informar first_frame_ok: true. Si falla, prueba conectividad a la IP/puerto del teléfono, confirma que ambos están en la misma red y luego prueba UDP. No desactives seguridad del sistema ni expongas el stream a Internet.
 
-8. Si no existe calibración, créala con la cámara ya fijada en alto. Pídeme hacer clic en cuatro puntos del piso en este orden: superior izquierda, superior derecha, inferior derecha e inferior izquierda:
-   python hardware\local_vision_provider.py --source "<URL_RTSP_LOCAL>" --rtsp-transport tcp --calibrate calib-planta.json --plant-width 8 --plant-height 5
-   Ajusta 8 y 5 a las dimensiones reales que yo confirme. `calib-planta.json` es local y no debe contener la URL RTSP.
+8. Define las dimensiones medidas de la planta y el origen de las coordenadas. Fija la cámara antes de tomar referencias físicas.
 
 9. No inicies manualmente el proveedor. FastAPI detectará `.venv-vision` y asignará un puerto libre. Si el entorno tiene otro nombre, define `VISION_PYTHON` con la ruta completa de su `python.exe` antes de iniciar FastAPI.
 
-10. En el dashboard abre **Cámara → Agregar cámara** y captura nombre, RTSP, IP/host, puerto, ruta, usuario y contraseña. Selecciona perfil Equilibrado, activa inicio automático e indica `calib-planta.json` si ya existe. Guarda, pulsa **Probar** y verifica mediante las rutas que devuelve `GET /api/cameras`:
+10. En el dashboard abre **Cámara → Agregar cámara** y captura nombre, RTSP, IP/host, puerto, ruta, usuario y contraseña. Selecciona perfil Equilibrado, activa inicio automático . Guarda, pulsa **Probar** y verifica mediante las rutas que devuelve `GET /api/cameras`:
     - `http://127.0.0.1:8000/api/cameras/<ID>/health`
     - `http://127.0.0.1:8000/api/cameras/<ID>/stream/annotated`
     - `http://127.0.0.1:8000/api/cameras/<ID>/stream/raw`
@@ -107,7 +105,7 @@ Trabaja paso a paso y no des por terminado el despliegue hasta hacer las verific
     - Métricas → Analíticas permite activar/desactivar módulos y usar las vistas Supervisor, Ingeniería industrial y Balanceo;
     - una zona sensible muestra solo conteos agregados, sin IDs ni rutas.
 
-14. En Cámara → Mapear áreas, ayúdame a congelar una captura, dibujar al menos tres zonas, nombrarlas, asignar tipo/línea/capacidad y guardarlas. Después comprueba que aparecen en el plano, video y endpoint espacial.
+14. Primero configura las dimensiones en Layout. En Cámara → Calibrar piso, usa cuatro anclas medidas y al menos un control independiente. Luego, en Cámara → Mapear áreas, ayúdame a congelar una captura, dibujar al menos tres zonas, nombrarlas, asignar tipo/línea/capacidad y guardarlas. Después comprueba que aparecen en el plano, video y endpoint espacial.
 
 15. Haz una prueba real caminando entre zonas durante varios minutos y verifica:
     - ID razonablemente persistente;

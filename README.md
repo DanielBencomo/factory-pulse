@@ -9,7 +9,7 @@ permanencia. No hace reconocimiento facial ni almacena video.
 Requisitos verificados para esta línea base: Python 3.12 y Node.js 22.12+
 (incluido Node 24). Ejecuta los comandos desde la raíz. Antes de actualizar
 una instalación existente, detén el backend y respalda su archivo SQLite,
-la llave de cámara y las calibraciones. Si la base antigua fue alimentada por
+la llave de cámara. La calibración vigente queda guardada en SQLite. Si la base antigua fue alimentada por
 el simulador, inicia con otra base: no se borra ni migra su historial al arrancar.
 
 **Terminal 1 · API (PowerShell)**
@@ -76,4 +76,5 @@ esa IP en el firmware. No expongas la API ni los streams a Internet.
 Más detalles: [visión RTSP](docs/VISION_YOLO_RTSP.md),
 [despliegue en Windows](docs/PROMPT_DESPLIEGUE_PC.md) y
 [hardware](docs/HARDWARE.md) y [línea base técnica](docs/LINEA_BASE_TECNICA.md) y
-[contrato de evidencia de las métricas](docs/CONFIANZA_DATOS.md).
+[contrato de evidencia de las métricas](docs/CONFIANZA_DATOS.md) y
+[auditoría de calibración](docs/CALIBRACION.md).

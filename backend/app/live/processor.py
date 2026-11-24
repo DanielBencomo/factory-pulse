@@ -19,8 +19,9 @@ from app.calculations.evidence import floor_position, presence_value, zone_count
 from app.calculations.distance import TrajectoryPoint, calculate_trajectory_distance
 from app.calculations.zones import aggregate_zone_metrics
 from app.database import AsyncSessionLocal
+from app.cameras.calibration import active_revisions, main_floor, revision_key
 from app.devices.registry import device_status
-from app.models.db_models import DBAlert, DBAlertRule, DBDevice, DBEvent, DBFloorPlan, DBPolygonZone, DBStation, DBStop
+from app.models.db_models import DBAlert, DBAlertRule, DBDevice, DBEvent, DBPolygonZone, DBStation, DBStop
 from app.rules.engine import has_open_alert, rule_engine
 from app.ws.manager import ws_manager
 
@@ -82,12 +83,14 @@ class LiveProcessor:
                 )
             ).all()
 
+            floor = await main_floor(session)
+            revisions = await active_revisions(session, floor)
             positions: Dict[str, List[Tuple[datetime, float, float]]] = {}
             occupancy_bundles: Dict[str, Tuple[datetime, Dict[str, Any]]] = {}
             occupancy_legacy: Dict[Tuple[str, str], Tuple[datetime, Dict[str, Any]]] = {}
             for at, etype, p, _dev in rows:
                 if etype == "position":
-                    position = floor_position(p or {})
+                    position = floor_position(p or {}, _dev, revisions)
                     if position:
                         track, x, y = position
                         positions.setdefault(track, []).append((at, x, y))
@@ -103,7 +106,7 @@ class LiveProcessor:
             snapshots = [(device, at, payload) for device, (at, payload) in occupancy_bundles.items()]
             snapshots += [(device, at, payload) for (device, _), (at, payload) in occupancy_legacy.items()]
             for device, at, payload in snapshots:
-                for zone, count in zone_counts(payload).items():
+                for zone, count in zone_counts(payload, device, revisions).items():
                     key = (device, zone)
                     if key not in per_source or at >= per_source[key][0]:
                         per_source[key] = (at, count)
@@ -117,6 +120,7 @@ class LiveProcessor:
                 "type": "TRACKS",
                 "mode": mode,
                 "observed_at": now.isoformat(),
+                "calibration_key": revision_key(floor, revisions) if floor else None,
                 "tracks": {k: {"x": v[1], "y": v[2], "name": k} for k, v in live_tracks.items()},
             })
 
@@ -132,7 +136,7 @@ class LiveProcessor:
                 session, now, rows, stations, zone_of, zone_to_station,
                 live_tracks, aggregate_counts,
             )
-            await self._evaluate_rules(session, now, rows, stations, zones, live_tracks, positions, statuses)
+            await self._evaluate_rules(session, now, rows, stations, zones, live_tracks, positions, statuses, floor if revisions else None)
             await self._check_discrepancies(session, now, rows, stations, zone_of, zone_to_station, positions, live_tracks)
             if window.total_seconds() >= 600:
                 await self._check_repeated_visits(session, now, zones, positions)
@@ -203,7 +207,7 @@ class LiveProcessor:
         return out
 
     # ── reglas existentes, ahora también con datos reales ──
-    async def _evaluate_rules(self, session, now, rows, stations, zones, live_tracks, positions, statuses):
+    async def _evaluate_rules(self, session, now, rows, stations, zones, live_tracks, positions, statuses, floor):
         since = self._last_eval or now - timedelta(seconds=5)
         self._last_eval = now
         recent = [{"type": t, "payload": p} for at, t, p, _ in rows if at > since and t != "position"]
@@ -216,12 +220,11 @@ class LiveProcessor:
             {"device_id": d.device_id, "name": d.name, "status": device_status(d, now), "last_heartbeat": d.last_heartbeat, "station_id": d.station_id}
             for d in devices
         ]
-        fp = (await session.execute(select(DBFloorPlan))).scalars().first()
-        scale = fp.width_meters if fp and (fp.calibration or {}).get('is_calibrated') else None
+        scale = (floor.width_meters, floor.height_meters) if floor else None
         distances = []
         for trk, pts in positions.items():
             recent_pts = [TrajectoryPoint(x, y, at) for at, x, y in pts if (now - at).total_seconds() <= 120]
-            d = calculate_trajectory_distance(recent_pts, calibration_scale_meters=scale)
+            d = calculate_trajectory_distance(recent_pts, floor_dimensions_m=scale)
             d["track_id"] = trk
             distances.append(d)
         alerts = await rule_engine.evaluate_rules(session, recent, stations_dicts, zones_metrics, devices_dicts, distances)

@@ -9,7 +9,7 @@ Procesador de datos reales.
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select, or_
@@ -18,8 +18,10 @@ from app.calculations.analytics import point_in_polygon
 from app.calculations.evidence import floor_position, presence_value, zone_counts
 from app.calculations.distance import TrajectoryPoint, calculate_trajectory_distance
 from app.calculations.zones import aggregate_zone_metrics
+from app.calculations.trajectory import MAX_GAP_S
 from app.database import AsyncSessionLocal
 from app.cameras.calibration import active_revisions, main_floor, revision_key
+from app.cameras.observations import zone_revision
 from app.devices.registry import device_status
 from app.models.db_models import DBAlert, DBAlertRule, DBDevice, DBEvent, DBPolygonZone, DBStation, DBStop
 from app.rules.engine import has_open_alert, rule_engine
@@ -27,7 +29,7 @@ from app.ws.manager import ws_manager
 
 logger = logging.getLogger("factory_pulse.live")
 
-POSITION_MAX_AGE = 10.0
+POSITION_MAX_AGE = MAX_GAP_S
 PRESENCE_MAX_AGE = 30.0
 MACHINE_MAX_AGE = 90.0
 
@@ -85,15 +87,17 @@ class LiveProcessor:
 
             floor = await main_floor(session)
             revisions = await active_revisions(session, floor)
-            positions: Dict[str, List[Tuple[datetime, float, float]]] = {}
+            zones = (await session.execute(select(DBPolygonZone))).scalars().all()
+            layout_revision = zone_revision(zones)
+            positions: Dict[str, List[Tuple[datetime, float, float, str]]] = {}
             occupancy_bundles: Dict[str, Tuple[datetime, Dict[str, Any]]] = {}
             occupancy_legacy: Dict[Tuple[str, str], Tuple[datetime, Dict[str, Any]]] = {}
             for at, etype, p, _dev in rows:
                 if etype == "position":
-                    position = floor_position(p or {}, _dev, revisions)
+                    position = floor_position(p or {}, _dev, revisions, layout_revision)
                     if position:
                         track, x, y = position
-                        positions.setdefault(track, []).append((at, x, y))
+                        positions.setdefault(track, []).append((at, x, y, p["segment_id"]))
                 elif etype == "zone_occupancy" and now - at <= timedelta(seconds=12):
                     device = _dev or "unknown"
                     if isinstance(p.get("counts"), dict):
@@ -106,7 +110,7 @@ class LiveProcessor:
             snapshots = [(device, at, payload) for device, (at, payload) in occupancy_bundles.items()]
             snapshots += [(device, at, payload) for (device, _), (at, payload) in occupancy_legacy.items()]
             for device, at, payload in snapshots:
-                for zone, count in zone_counts(payload, device, revisions).items():
+                for zone, count in zone_counts(payload, device, revisions, layout_revision).items():
                     key = (device, zone)
                     if key not in per_source or at >= per_source[key][0]:
                         per_source[key] = (at, count)
@@ -121,13 +125,23 @@ class LiveProcessor:
                 "mode": mode,
                 "observed_at": now.isoformat(),
                 "calibration_key": revision_key(floor, revisions) if floor else None,
-                "tracks": {k: {"x": v[1], "y": v[2], "name": k} for k, v in live_tracks.items()},
+                "zone_revision": layout_revision,
+                "tracks": {
+                    k: {"x": x, "y": y, "name": k, "observed_at_ms": at.replace(tzinfo=timezone.utc).timestamp() * 1000}
+                    for k, (at, x, y, _) in live_tracks.items()
+                },
+                # Una ventana solapada tolera perder un tick. El tablero elimina
+                # duplicados por hora de captura; no inventa muestras por tick.
+                "samples": {
+                    k: [[x, y, at.replace(tzinfo=timezone.utc).timestamp() * 1000, segment]
+                        for at, x, y, segment in pts if at >= now - timedelta(seconds=3)]
+                    for k, pts in positions.items() if pts[-1][0] >= now - timedelta(seconds=3)
+                },
             })
 
             if not full:
                 return
 
-            zones = (await session.execute(select(DBPolygonZone))).scalars().all()
             stations = (await session.execute(select(DBStation))).scalars().all()
             zone_of = {sid: z for z in zones for sid in (z.station_ids or [])}
             zone_to_station = {z.zone_id: z.station_ids[0] for z in zones if z.station_ids}
@@ -174,7 +188,7 @@ class LiveProcessor:
             )
             in_zone = bool(zone) and (
                 aggregate_counts.get(zone.zone_id, 0) > 0
-                or any(_center_in(zone.polygon, x, y) for _, x, y in live_tracks.values())
+                or any(_center_in(zone.polygon, x, y) for _, x, y, _ in live_tracks.values())
             )
             pres = presence.get(sid)
             pres_ok = pres is not None and (now - pres[0]).total_seconds() <= PRESENCE_MAX_AGE
@@ -221,10 +235,11 @@ class LiveProcessor:
             for d in devices
         ]
         scale = (floor.width_meters, floor.height_meters) if floor else None
+        private_polys = [z.polygon for z in zones if floor and z.floor_plan_id == floor.id and (z.is_aggregated_only or z.type == "bathroom")]
         distances = []
         for trk, pts in positions.items():
-            recent_pts = [TrajectoryPoint(x, y, at) for at, x, y in pts if (now - at).total_seconds() <= 120]
-            d = calculate_trajectory_distance(recent_pts, floor_dimensions_m=scale)
+            recent_pts = [TrajectoryPoint(x, y, at, segment_id=segment) for at, x, y, segment in pts if (now - at).total_seconds() <= 120]
+            d = calculate_trajectory_distance(recent_pts, floor_dimensions_m=scale, private_polys=private_polys)
             d["track_id"] = trk
             distances.append(d)
         alerts = await rule_engine.evaluate_rules(session, recent, stations_dicts, zones_metrics, devices_dicts, distances)
@@ -256,7 +271,7 @@ class LiveProcessor:
         names = {s.station_id: s.name for s in stations}
 
         def camera_saw(zone, t0: datetime, t1: datetime) -> bool:
-            return any(t0 <= at <= t1 and _center_in(zone.polygon, x, y) for pts in positions.values() for at, x, y in pts)
+            return any(t0 <= at <= t1 and _center_in(zone.polygon, x, y) for pts in positions.values() for at, x, y, _ in pts)
 
         latest_csi: Dict[str, Tuple[datetime, str]] = {}
         for at, etype, p, dev in rows:
@@ -307,7 +322,7 @@ class LiveProcessor:
         for trk, pts in positions.items():
             for z in support:
                 inside_prev, entries = False, 0
-                for at, x, y in pts:
+                for at, x, y, _ in pts:
                     if at < since:
                         continue
                     inside = _center_in(z.polygon, x, y)

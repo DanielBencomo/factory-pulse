@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.cameras.calibration import CalibrationRef, active_revisions, require_projection
+from app.cameras.observations import vision_zones, zone_revision
 from app.models.db_models import DBPolygonZone, DBAuditLog, DBEvent, DBFloorPlan, DBLine, DBStation
 from app.calculations.evidence import count_value, floor_position, zone_counts
 from app.ws.manager import ws_manager
@@ -42,6 +43,12 @@ async def list_zones(session: AsyncSession = Depends(get_db)):
     res = await session.execute(stmt)
     zones = res.scalars().all()
     return [_zone_response(z) for z in zones]
+
+
+@router.get("/zones/vision")
+async def vision_zone_config(session: AsyncSession = Depends(get_db)):
+    zones = await vision_zones(session)
+    return {"revision": zone_revision(zones), "zones": [_zone_response(z) for z in zones]}
 
 class ZoneInput(PolygonZoneCreate):
     calibration_ref: CalibrationRef | None = None
@@ -121,12 +128,13 @@ async def live_zone_occupancy(
     ).all()
 
     revisions = await active_revisions(session)
+    layout_revision = zone_revision(zones)
     tracks: set[str] = set()
     snapshots: Dict[tuple[str, str], tuple[datetime, Dict[str, Any]]] = {}
     for at, event_type, payload, device_id in rows:
         payload = payload or {}
         if event_type == "position":
-            position = floor_position(payload, device_id, revisions)
+            position = floor_position(payload, device_id, revisions, layout_revision)
             if position:
                 tracks.add(position[0])
         elif isinstance(payload.get("zone_id"), str) and count_value(payload.get("count")) is not None:
@@ -139,7 +147,7 @@ async def live_zone_occupancy(
     for (source, scope), (at, payload) in snapshots.items():
         if scope == "__plant__":
             totals.append((at, payload["count"]))
-        for zone, count in zone_counts(payload, source, revisions).items():
+        for zone, count in zone_counts(payload, source, revisions, layout_revision).items():
             key = (source, zone)
             if key not in zone_by_source or at >= zone_by_source[key][0]:
                 zone_by_source[key] = (at, count)

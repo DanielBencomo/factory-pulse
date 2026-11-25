@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.calculations.analytics import point_in_polygon
 from app.calculations.evidence import count_value, floor_position, zone_counts
+from app.cameras.observations import vision_zones, zone_revision
+from app.calculations.trajectory import MAX_GAP_S
 from app.calculations.spatial import build_spatial_insights, compute_spatial_summary
 from app.database import get_db
 from app.cameras.calibration import active_revisions, main_floor
@@ -108,6 +110,8 @@ async def _build_spatial_response(
     active_mode = "live"
     floor_plan = await main_floor(session)
     revisions = await active_revisions(session, floor_plan)
+    floor_zones = await vision_zones(session)
+    layout_revision = zone_revision(floor_zones)
     width_m = floor_plan.width_meters if floor_plan else 40.0
     height_m = floor_plan.height_meters if floor_plan else 25.0
     zones, scope_poly, scope_label, use_total = await _scope_context(session, scope, scope_id)
@@ -129,7 +133,7 @@ async def _build_spatial_response(
         )
     ).all()
 
-    positions: Dict[str, List[Tuple[float, float, float, Optional[float]]]] = defaultdict(list)
+    positions: Dict[str, List[Tuple[float, float, float, Optional[float], str]]] = defaultdict(list)
     occupancy: Dict[Tuple[str, str], List[Tuple[float, Optional[int], Dict[str, int]]]] = defaultdict(list)
     devices = set()
     for occurred_at, event_type, payload, device_id in rows:
@@ -137,17 +141,17 @@ async def _build_spatial_response(
         device = str(device_id or payload.get("source") or "unknown")
         timestamp = _epoch(occurred_at)
         if event_type == "position":
-            position = floor_position(payload, device_id, revisions)
+            position = floor_position(payload, device_id, revisions, layout_revision)
             if position:
                 track, x, y = position
                 devices.add(device)
-                positions[track].append((timestamp, x, y, None))
+                positions[track].append((timestamp, x, y, None, payload["segment_id"]))
         elif event_type == "zone_occupancy":
             scope_key = payload.get("zone_id")
             count = count_value(payload.get("count"))
             if not isinstance(scope_key, str) or count is None:
                 continue
-            counts = zone_counts(payload, device_id, revisions)
+            counts = zone_counts(payload, device_id, revisions, layout_revision)
             if scope_key == "__plant__" or counts:
                 devices.add(device)
                 occupancy[(device, scope_key)].append((timestamp, count if scope_key == "__plant__" else None, counts))
@@ -164,6 +168,7 @@ async def _build_spatial_response(
         scope_poly=scope_poly,
         use_occupancy_total=use_total,
         calibrated=calibrated,
+        private_polys=[z.polygon for z in floor_zones if z.is_aggregated_only or z.type == "bathroom"],
     )
     result["summary"]["source_count"] = len(devices)
     result["summary"]["calibrated"] = calibrated
@@ -183,7 +188,7 @@ async def _build_spatial_response(
         "transitions": result["transitions"],
         "insights": insights,
         "methodology": {
-            "position_max_age_s": 10,
+            "position_max_age_s": MAX_GAP_S,
             "occupancy_max_age_s": 12,
             "stationary_threshold_m_s": 0.15,
             "privacy": "Sin reconocimiento facial; zonas sensibles sólo agregadas; la respuesta no contiene track IDs.",

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cameras.calibration import MAIN_FLOOR_ID, active_revisions, frame_revision, revision_key
+from app.cameras.observations import vision_zones, zone_revision
 from app.database import get_db
 from app.models.db_models import DBFloorPlan
 from app.models.schemas import FloorPlanCreate, FloorPlanResponse, ScaleCalibration
@@ -21,7 +22,10 @@ async def _out(floor: DBFloorPlan, session: AsyncSession) -> FloorPlanResponse:
         width_meters=floor.width_meters, height_meters=floor.height_meters,
         image_url=floor.image_url, svg_data=floor.svg_data,
         created_at=floor.created_at, updated_at=floor.updated_at,
-        calibration=ScaleCalibration(is_calibrated=bool(revisions), frame_revision=frame, revision_key=revision_key(floor, revisions)),
+        calibration=ScaleCalibration(
+            is_calibrated=bool(revisions), frame_revision=frame, revision_key=revision_key(floor, revisions),
+            zone_revision=zone_revision(await vision_zones(session)) if floor.id == MAIN_FLOOR_ID else "",
+        ),
     )
 
 

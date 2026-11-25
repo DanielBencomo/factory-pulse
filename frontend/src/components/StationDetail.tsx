@@ -16,7 +16,7 @@ import { KINDS, SENSOR_KINDS } from '../layout/interior';
 
 export { pointInPolygon };
 
-export type Track = { x: number; y: number; name: string };
+export type Track = { x: number; y: number; name: string; observed_at_ms: number };
 export type ZoneLogEntry = { t: number; trackId: string; zoneId: string; kind: 'entrada' | 'salida' };
 export type CsiState = 'actividad' | 'quietud' | 'sin_presencia';
 export type StationKind = EquipmentType;

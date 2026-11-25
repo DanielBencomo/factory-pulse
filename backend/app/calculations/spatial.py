@@ -6,21 +6,20 @@ Nunca convierten quietud en improductividad y nunca devuelven track IDs.
 
 from bisect import bisect_right
 from collections import Counter
-from math import ceil, hypot, log2
+from math import ceil, log2
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.calculations.analytics import point_in_polygon
+from app.calculations.evidence import OCCUPANCY_MAX_AGE_S, latest_zone_counts, sum_zone_counts
+from app.calculations.trajectory import JITTER_M, MAX_GAP_S, MAX_SPEED_M_S, observed_step_m, visible_step
 
 
-PositionSample = Tuple[float, float, float, Optional[float]]  # t, x, y, speed_m_s
+PositionSample = Tuple[float, float, float, Optional[float], str]  # t, x, y, speed_m_s, segment_id
 OccupancySample = Tuple[float, Optional[int], Mapping[str, int]]  # t, total, zone counts
 Poly = Sequence[Sequence[float]]
 
-POSITION_MAX_AGE_S = 10.0
-OCCUPANCY_MAX_AGE_S = 12.0
+POSITION_MAX_AGE_S = MAX_GAP_S
 MOTION_THRESHOLD_M_S = 0.15
-MAX_PLAUSIBLE_SPEED_M_S = 4.5
-MIN_DISTANCE_M = 0.08
 
 
 def polygon_area_m2(poly: Poly, width_m: float, height_m: float) -> float:
@@ -41,7 +40,7 @@ def _inside_scope(x: float, y: float, scope_poly: Optional[Poly]) -> bool:
 
 
 def _motion_state(speed: Optional[float]) -> str:
-    if speed is None or speed < 0 or speed > MAX_PLAUSIBLE_SPEED_M_S:
+    if speed is None or speed < 0 or speed > MAX_SPEED_M_S:
         return "unknown"
     return "stationary" if speed < MOTION_THRESHOLD_M_S else "moving"
 
@@ -54,14 +53,14 @@ def _derive_missing_speeds(
         ordered = sorted(samples, key=lambda p: p[0])
         enriched: List[PositionSample] = []
         previous: Optional[PositionSample] = None
-        for t, x, y, speed in ordered:
+        for t, x, y, speed, segment in ordered:
             derived = speed
             if derived is None and previous is not None:
                 dt = t - previous[0]
-                if 0.15 <= dt <= POSITION_MAX_AGE_S:
-                    derived = hypot((x - previous[1]) * width_m, (y - previous[2]) * height_m) / dt
-            enriched.append((t, x, y, derived))
-            previous = (t, x, y, speed)
+                if (distance := observed_step_m(dt, (x - previous[1]) * width_m, (y - previous[2]) * height_m, segment, previous[4])) is not None:
+                    derived = distance / dt
+            enriched.append((t, x, y, derived, segment))
+            previous = (t, x, y, speed, segment)
         out[track] = enriched
     return out
 
@@ -90,6 +89,7 @@ def compute_spatial_summary(
     use_occupancy_total: bool = False,
     calibrated: bool = True,
     step_s: Optional[float] = None,
+    private_polys: Sequence[Poly] = (),
 ) -> Dict[str, Any]:
     """Build privacy-safe spatial metrics for one plant/line/station/zone scope."""
     window_s = max(1.0, t1 - t0)
@@ -119,7 +119,7 @@ def compute_spatial_summary(
     zone_observed_s: Counter[str] = Counter()
     transitions: Counter[Tuple[str, str]] = Counter()
     last_zone: Dict[str, Optional[str]] = {}
-    last_seen: Dict[str, float] = {}
+    last_seen: Dict[str, Tuple[float, str]] = {}
     sequences: Dict[str, List[str]] = {}
     backtracks = 0
 
@@ -135,16 +135,16 @@ def compute_spatial_summary(
         start = t0 + sample_idx * step
         duration = 0.0 if current else max(0.0, min(step, t1 - start))
         t = t1 if current else start + duration / 2
-        track_counts = Counter()
         track_at: List[float] = []
         track_states: Dict[str, Counter[str]] = {zid: Counter() for zid in zone_ids}
         live_tracks: Dict[str, Tuple[float, float, Optional[float], Optional[str]]] = {}
+        live_evidence: Dict[str, Tuple[float, str]] = {}
 
         for track, times in track_times.items():
             idx = bisect_right(times, t) - 1
             if idx < 0 or t - times[idx] > POSITION_MAX_AGE_S:
                 continue
-            at, x, y, speed = enriched[track][idx]
+            at, x, y, speed, segment = enriched[track][idx]
             if not _inside_scope(x, y, scope_poly):
                 continue
             zone_id = next(
@@ -157,13 +157,12 @@ def compute_spatial_summary(
                 continue
             track_at.append(at)
             live_tracks[track] = (x, y, speed if calibrated else None, zone_id)
+            live_evidence[track] = (at, segment)
             if zone_id:
-                track_counts[zone_id] += 1
                 track_states[zone_id][_motion_state(speed if calibrated else None)] += 1
 
-        aggregate_counts: Counter[str] = Counter()
         aggregate_totals = []
-        zone_snapshots: Dict[Tuple[str, str], Tuple[float, int]] = {}
+        available_counts = []
         for key, times in occupancy_times.items():
             idx = bisect_right(times, t) - 1
             if idx < 0 or t - times[idx] > OCCUPANCY_MAX_AGE_S:
@@ -171,22 +170,17 @@ def compute_spatial_summary(
             at, total, counts = occupancy_sorted[key][idx]
             if total is not None:
                 aggregate_totals.append((at, total))
-            for zone_id, count in counts.items():
-                if zone_id in zone_ids:
-                    source_zone = (key[0], zone_id)
-                    if source_zone not in zone_snapshots or at >= zone_snapshots[source_zone][0]:
-                        zone_snapshots[source_zone] = (at, count)
-        for (_, zone_id), (_, count) in zone_snapshots.items():
-            aggregate_counts[zone_id] += count
+            available_counts.append((key[0], at, {zid: n for zid, n in counts.items() if zid in zone_ids}))
+        zone_snapshots = latest_zone_counts(available_counts)
 
-        counts = dict(track_counts)
-        counts.update(aggregate_counts)
+        # Una posición positiva no prueba cobertura de la zona completa.
+        counts = sum_zone_counts(zone_snapshots)
         if use_occupancy_total and aggregate_totals:
             scope_count = sum(total for _, total in aggregate_totals)
             observed_times = [at for at, _ in aggregate_totals]
         else:
             scope_count = len(live_tracks) if use_occupancy_total else sum(counts.values())
-            observed_times = track_at + [at for at, _ in zone_snapshots.values()]
+            observed_times = (track_at if use_occupancy_total else []) + [at for at, _ in zone_snapshots.values()]
 
         if observed_times:
             latest = max(observed_times)
@@ -240,7 +234,9 @@ def compute_spatial_summary(
 
         # Visitas y rutas se agregan, nunca se publican secuencias o IDs.
         for track, (_x, _y, _speed, zid) in live_tracks.items():
-            if t - last_seen.get(track, t) > OCCUPANCY_MAX_AGE_S * 2:
+            at, segment = live_evidence[track]
+            prior_at, prior_segment = last_seen.get(track, (at, segment))
+            if segment != prior_segment or at - prior_at > MAX_GAP_S:
                 last_zone[track] = None
                 sequences[track] = []
             # Una zona sensible corta la secuencia. Así nunca se publica una
@@ -248,7 +244,7 @@ def compute_spatial_summary(
             if zid in private_ids:
                 last_zone[track] = None
                 sequences[track] = []
-                last_seen[track] = t
+                last_seen[track] = (at, segment)
                 continue
             previous = last_zone.get(track)
             if zid and zid != previous:
@@ -264,7 +260,7 @@ def compute_spatial_summary(
                 elif zid not in private_ids:
                     sequences[track] = [zid]
                 last_zone[track] = zid
-            last_seen[track] = t
+            last_seen[track] = (at, segment)
 
     coverage_pct = round(100 * observed_s / window_s, 1)
 
@@ -274,26 +270,18 @@ def compute_spatial_summary(
     for samples in (enriched.values() if calibrated else []):
         previous: Optional[PositionSample] = None
         for point in samples:
-            t, x, y, _speed = point
+            t, x, y, _speed, segment = point
             if not (t0 <= t <= t1):
                 previous = point
                 continue
             if previous is not None:
-                pt, px, py, _ = previous
+                pt, px, py, _, previous_segment = previous
                 dt = t - pt
-                private = any(point_in_polygon(x, y, zone_by_id[zid]["polygon"]) for zid in private_ids)
-                previous_private = any(point_in_polygon(px, py, zone_by_id[zid]["polygon"]) for zid in private_ids)
-                if (
-                    pt >= t0 and 0 < dt <= POSITION_MAX_AGE_S
-                    and _inside_scope(x, y, scope_poly)
-                    and _inside_scope(px, py, scope_poly)
-                    and not private
-                    and not previous_private
-                ):
-                    distance = hypot((x - px) * width_m, (y - py) * height_m)
-                    if distance / dt <= MAX_PLAUSIBLE_SPEED_M_S:
+                if pt >= t0 and visible_step((px, py), (x, y), scope_poly, private_polys):
+                    distance = observed_step_m(dt, (x - px) * width_m, (y - py) * height_m, segment, previous_segment)
+                    if distance is not None:
                         distance_measurable = True
-                        if distance >= MIN_DISTANCE_M:
+                        if distance >= JITTER_M:
                             distance_m += distance
             previous = point
 

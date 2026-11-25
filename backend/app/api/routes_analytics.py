@@ -9,9 +9,10 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.calculations.analytics import compute_line_analytics
-from app.calculations.evidence import count_value, floor_position, presence_value
+from app.calculations.evidence import count_value, floor_position, presence_value, zone_counts
 from app.database import get_db
 from app.cameras.calibration import active_revisions, main_floor
+from app.cameras.observations import zone_revision
 from app.models.db_models import DBEvent, DBLine, DBPolygonZone, DBStation, DBStop
 
 router = APIRouter()
@@ -78,6 +79,7 @@ async def _context(session: AsyncSession, line_id: str) -> dict:
         "line_id": line_id,
         "calibrated": bool(revisions),
         "revisions": revisions,
+        "zone_revision": zone_revision(zones),
         "W": fp.width_meters if fp else 40.0,
         "H": fp.height_meters if fp else 25.0,
         "stations": stations,
@@ -96,7 +98,7 @@ async def _compute(session: AsyncSession, ctx: dict, mode: str, start: datetime,
         await session.execute(
             select(DBEvent.occurred_at, DBEvent.type, DBEvent.payload, DBEvent.device_id)
             .where(
-                DBEvent.type.in_(["position", "machine_state", "cycle", "presence"]),
+                DBEvent.type.in_(["position", "machine_state", "cycle", "presence", "zone_occupancy"]),
                 DBEvent.occurred_at >= start - lead,
                 DBEvent.occurred_at <= end,
                 DBEvent.mode == mode,
@@ -109,15 +111,21 @@ async def _compute(session: AsyncSession, ctx: dict, mode: str, start: datetime,
     machine: Dict[str, List] = {}
     cycles: Dict[str, List] = {}
     presence: Dict[str, List] = {}
+    zone_snapshots: dict = {}
     for occurred_at, etype, p, device_id in rows:
         p = p or {}
         t = _epoch(occurred_at)
         sid = p.get("station_id") or ctx["zone_to_station"].get(p.get("zone_id", ""))
         if etype == "position":
-            position = floor_position(p, device_id, ctx['revisions'])
+            position = floor_position(p, device_id, ctx["revisions"], ctx["zone_revision"])
             if position:
                 track, x, y = position
-                positions.setdefault(track, []).append((t, x, y))
+                positions.setdefault(track, []).append((t, x, y, p["segment_id"]))
+        elif etype == "zone_occupancy":
+            scope = p.get("zone_id")
+            if isinstance(scope, str):
+                counts = zone_counts(p, device_id, ctx["revisions"], ctx["zone_revision"])
+                zone_snapshots.setdefault((device_id or "unknown", scope), []).append((t, counts))
         elif etype == "machine_state" and sid in station_ids:
             if p.get("state") in ("running", "idle", "fault", "stopped"):
                 machine.setdefault(sid, []).append((t, p["state"]))
@@ -171,8 +179,9 @@ async def _compute(session: AsyncSession, ctx: dict, mode: str, start: datetime,
         m_per_y=ctx["H"],
         calibrated=ctx["calibrated"],
         presence=presence,
+        zone_snapshots=zone_snapshots,
         zones=[
-            {"zone_id": z.zone_id, "name": z.name, "type": z.type, "polygon": z.polygon, "is_aggregated_only": z.is_aggregated_only}
+            {"zone_id": z.zone_id, "name": z.name, "type": z.type, "polygon": z.polygon, "is_aggregated_only": z.is_aggregated_only or z.type == "bathroom"}
             for z in ctx["zones"]
         ],
     )

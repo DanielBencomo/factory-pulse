@@ -35,6 +35,7 @@ export interface ScaleCalibration {
   is_calibrated: boolean;
   frame_revision: string;
   revision_key: string;
+  zone_revision: string;
 }
 
 export interface FloorPlan {
@@ -111,7 +112,15 @@ export interface Layout {
 }
 
 /** Punto de trayectoria: x, y normalizados y marca de tiempo en ms. */
-export type TrackPoint = [number, number, number];
+export type TrackPoint = [x: number, y: number, capturedAtMs: number, segmentId: string];
+export type TrackSamples = Record<string, TrackPoint[]>;
+export type TrajectoryPolicy = { max_gap_s: number; max_speed_m_s: number; jitter_m: number };
+export type TrackHistory = {
+  calibration_key: string | null;
+  zone_revision: string;
+  trajectory: TrajectoryPolicy;
+  tracks: TrackSamples;
+};
 
 export interface Station {
   id: string;

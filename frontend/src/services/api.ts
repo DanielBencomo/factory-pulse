@@ -1,7 +1,7 @@
 import {
   FloorPlan, PolygonZone, Station, Device, Stop, StopReason,
   Alert, AlertRuleConfig, MetricsSummary, DashboardConfig,
-  CatalogModule, Layout, Line, TrackPoint,
+  CatalogModule, Layout, Line, TrackHistory,
   Analytics, ConnectInfo, InteriorItem, Badge, ZoneSignals,
   OccupancySnapshot, RFIDConfig, ZoneType, SpatialSummary, CameraConfig, CameraInput, CameraProfile
 } from '../types';
@@ -123,9 +123,9 @@ export const api = {
     return res.json();
   },
 
-  async getTrackHistory(minutes: number = 30): Promise<Record<string, TrackPoint[]>> {
-    const res = await fetch(`${API_BASE}/tracks/history?minutes=${minutes}`);
-    if (!res.ok) return {};
+  async getTrackHistory(minutes: number = 30, signal?: AbortSignal): Promise<TrackHistory> {
+    const res = await fetch(`${API_BASE}/tracks/history?minutes=${minutes}`, { signal });
+    if (!res.ok) throw new Error(await errorText(res, 'No se pudo cargar el historial de visión'));
     return res.json();
   },
 

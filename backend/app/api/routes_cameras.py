@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.calculations.trajectory import trajectory_policy
 
 from app.cameras.manager import camera_manager, provider_base
 from app.cameras.calibration import (
@@ -457,6 +458,7 @@ async def get_camera_calibration(camera_id: str, session: AsyncSession = Depends
     floor = await main_floor(session)
     return {
         "calibration": active_calibration(camera, floor),
+        "trajectory": trajectory_policy(),
         "frame_revision": frame_revision(floor) if floor else None,
         "width_m": floor.width_meters if floor else None,
         "height_m": floor.height_meters if floor else None,

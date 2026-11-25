@@ -14,13 +14,15 @@ Para cada estación y cada instante de una rejilla regular se decide un estado:
 (regla crítica del documento del proyecto), así que sin dato de proceso no se afirma.
 """
 from bisect import bisect_right
-from math import ceil, hypot
+from math import ceil
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from app.calculations.evidence import OCCUPANCY_MAX_AGE_S, latest_zone_counts, sum_zone_counts
+from app.calculations.trajectory import JITTER_M, MAX_GAP_S, observed_step_m, visible_step
 
 STATES = ["productivo", "espera", "presente", "ausencia", "paro", "sin_datos"]
 UNAVAILABLE = ("paro", "sin_datos")  # no cuentan como tiempo disponible
 
-POSITION_MAX_AGE = 10.0   # s: una posición más vieja ya no describe el presente
+POSITION_MAX_AGE = MAX_GAP_S
 PRESENCE_MAX_AGE = 30.0   # s: vigencia de un evento de presencia (PIR / CSI)
 MACHINE_MAX_AGE = 90.0    # s: vigencia de un evento machine_state
 Poly = Sequence[Sequence[float]]
@@ -70,7 +72,7 @@ def compute_line_analytics(
     t0: float,
     t1: float,
     stations: List[Dict[str, Any]],
-    positions: Dict[str, List[Tuple[float, float, float]]],
+    positions: Dict[str, List[Tuple[float, float, float, str]]],
     machine: Dict[str, List[Tuple[float, str]]],
     cycles: Dict[str, List[Tuple[float, Optional[float], Optional[bool], int]]],
     stops: List[Dict[str, Any]],
@@ -82,10 +84,11 @@ def compute_line_analytics(
     bucket_s: Optional[int] = None,
     presence: Optional[Dict[str, List[Tuple[float, bool]]]] = None,
     zones: Optional[List[Dict[str, Any]]] = None,
+    zone_snapshots: Optional[Dict[Tuple[str, str], List[Tuple[float, Dict[str, int]]]]] = None,
 ) -> Dict[str, Any]:
     """
     stations: [{station_id, name, order, ideal_cycle, target_pph, polygon}], ordenadas por flujo
-    positions: {track_id: [(t, x, y)]} ordenado por t (x, y normalizados)
+    positions: {track_id: [(t, x, y, segment_id)]} ordenado por t (x, y normalizados)
     machine: {station_id: [(t, "running"|"idle")]}; cycles: {station_id: [(t, cycle_s, good, quantity)]}
     stops: [{start, end, authorized, reason, station_ids: set | None}] (None = toda la línea)
     presence: {station_id: [(t, presente)]} de PIR o CSI; complementa a la cámara
@@ -110,6 +113,9 @@ def compute_line_analytics(
     zone_person_s = {z["zone_id"]: 0.0 for z in zones}
     zone_occupied_s = {z["zone_id"]: 0.0 for z in zones}
     zone_visits = {z["zone_id"]: 0 for z in zones}
+    zone_observed_s = {z["zone_id"]: 0.0 for z in zones}
+    zone_snapshots = zone_snapshots or {}
+    occupancy_times = {key: [t for t, _ in values] for key, values in zone_snapshots.items()}
     inside_prev: Dict[Tuple[str, str], bool] = {}
 
     seconds = {s["station_id"]: {k: 0.0 for k in STATES} for s in stations}
@@ -127,25 +133,33 @@ def compute_line_analytics(
         for trk, times in track_times.items():
             i = bisect_right(times, t) - 1
             if i >= 0 and t - times[i] <= POSITION_MAX_AGE:
-                _, x, y = positions[trk][i]
+                _, x, y, _ = positions[trk][i]
                 live_pts.append((x, y))
                 live_ids.append(trk)
 
         # Tiempo por zona (persona·segundo, ocupación y entradas)
+        available_counts = []
+        for key, times in occupancy_times.items():
+            i = bisect_right(times, t) - 1
+            if i < 0 or t - times[i] > OCCUPANCY_MAX_AGE_S:
+                continue
+            at, counts = zone_snapshots[key][i]
+            available_counts.append((key[0], at, counts))
+        zone_counts = sum_zone_counts(latest_zone_counts(available_counts))
         for z in zones:
             zid = z["zone_id"]
             zx0, zy0, zx1, zy1 = zone_boxes[zid]
-            count = 0
             for trk, (x, y) in zip(live_ids, live_pts):
                 inside = zx0 <= x <= zx1 and zy0 <= y <= zy1 and point_in_polygon(x, y, z["polygon"])
                 if inside:
-                    count += 1
                     if not inside_prev.get((trk, zid)):
                         zone_visits[zid] += 1
                 inside_prev[(trk, zid)] = inside
-            zone_person_s[zid] += duration * count
-            if count:
-                zone_occupied_s[zid] += duration
+            if zid in zone_counts:
+                zone_observed_s[zid] += duration
+                zone_person_s[zid] += duration * zone_counts[zid]
+                if zone_counts[zid]:
+                    zone_occupied_s[zid] += duration
 
         for s in stations:
             sid = s["station_id"]
@@ -223,23 +237,20 @@ def compute_line_analytics(
     # Distancia caminada dentro del área de la línea
     distance_by_bucket: Dict[str, List[float]] = {}
     distance_measurable = False
+    distance_m = 0.0
     if line_area and calibrated:
-        ax0, ay0, ax1, ay1 = _bbox(line_area)
-
-        def inside(x, y):
-            return ax0 <= x <= ax1 and ay0 <= y <= ay1 and point_in_polygon(x, y, line_area)
-
+        private_polys = [z["polygon"] for z in zones if z.get("is_aggregated_only")]
         for trk, pts in positions.items():
             acc = [0.0] * nb
-            prev = None
-            for p in pts:
-                if not (t0 <= p[0] <= t1):
-                    prev = p
+            for prev, p in zip(pts, pts[1:]):
+                if not (t0 <= prev[0] < p[0] <= t1):
                     continue
-                if prev and t0 <= prev[0] < p[0] and p[0] - prev[0] <= POSITION_MAX_AGE and inside(p[1], p[2]) and inside(prev[1], prev[2]):
+                distance = observed_step_m(p[0] - prev[0], (p[1] - prev[1]) * m_per_x, (p[2] - prev[2]) * m_per_y, p[3], prev[3])
+                if distance is not None and visible_step(prev[1:3], p[1:3], line_area, private_polys):
                     distance_measurable = True
-                    acc[min(nb - 1, int((p[0] - t0) // bucket))] += hypot((p[1] - prev[1]) * m_per_x, (p[2] - prev[2]) * m_per_y)
-                prev = p
+                    if distance >= JITTER_M:
+                        acc[min(nb - 1, int((p[0] - t0) // bucket))] += distance
+                        distance_m += distance
             if any(acc):
                 distance_by_bucket[trk] = [round(a, 1) for a in acc]
 
@@ -278,7 +289,7 @@ def compute_line_analytics(
             "line_output": last["pieces"] if last else None,
             "line_output_target": round(last["target_pph"] * window / 3600, 1) if last else None,
             "bottleneck_station_id": bottleneck["station_id"] if bottleneck else None,
-            "distance_m": round(sum(sum(v) for v in distance_by_bucket.values()), 1) if distance_measurable else None,
+            "distance_m": round(distance_m, 1) if distance_measurable else None,
             "has_presence_data": has_presence_data,
             "has_position_data": any(t0 <= p[0] < t1 for v in positions.values() for p in v),
             "coverage_pct": round(100 * (window * len(stations) - totals["sin_datos"]) / (window * len(stations)), 1) if stations else 0.0,
@@ -296,14 +307,14 @@ def compute_line_analytics(
             (
                 {
                     "zone_id": z["zone_id"], "name": z["name"], "type": z["type"],
-                    "person_s": round(zone_person_s[z["zone_id"]], 1),
-                    "occupied_s": round(zone_occupied_s[z["zone_id"]], 1),
+                    "person_s": round(zone_person_s[z["zone_id"]], 1) if zone_observed_s[z["zone_id"]] else None,
+                    "occupied_s": round(zone_occupied_s[z["zone_id"]], 1) if zone_observed_s[z["zone_id"]] else None,
                     # en zonas privadas solo se reporta el agregado, sin conteo de entradas
-                    "visits": None if z.get("is_aggregated_only") else zone_visits[z["zone_id"]],
+                    "visits": None if z.get("is_aggregated_only") or not zone_observed_s[z["zone_id"]] else zone_visits[z["zone_id"]],
                     "is_aggregated_only": bool(z.get("is_aggregated_only")),
                 }
                 for z in zones
             ),
-            key=lambda r: -r["person_s"],
+            key=lambda r: -(r["person_s"] or 0),
         ),
     }

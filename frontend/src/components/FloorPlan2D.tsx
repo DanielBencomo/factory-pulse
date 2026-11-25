@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback, useId } from 'react';
 import { ArrowLeft, ChevronLeft, ChevronRight, PencilRuler, SlidersHorizontal } from 'lucide-react';
-import { Device, FloorPlan, Line, PolygonZone, SpatialLayer, Station, StationMetric, Stop, TrackPoint } from '../types';
+import { Device, FloorPlan, Line, PolygonZone, SpatialLayer, Station, StationMetric, Stop, TrackPoint, TrackSamples, TrajectoryPolicy } from '../types';
 import { Popover } from './Popover';
 import { interiorOf } from '../layout/interior';
 import { C, FONT_MONO, FONT_SANS, ZONE_TINT, statusOf, trackColor } from '../theme';
@@ -16,6 +16,8 @@ import {
   stationOfZone,
   runsInside,
   statsInside,
+  heatCells,
+  mergeTrackSamples,
   stationTransitions,
   shortStationName,
 } from '../layout/geometry';
@@ -29,8 +31,9 @@ interface FloorPlan2DProps {
   stationMetrics?: StationMetric[];
   stops?: Stop[];
   tracks: Record<string, Track>;
-  /** Marca de tiempo (ms) del último tick recibido; si falta se usa el reloj local. */
-  tickTime?: number;
+  clockSkew?: number;
+  zoneRevision?: string;
+  liveSamples?: TrackSamples;
   devices?: Device[];
   /** Pide al plano que abra una línea (p. ej. al cambiarla en el encabezado). */
   focusLineId?: string | null;
@@ -63,7 +66,9 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
   stationMetrics = [],
   stops = [],
   tracks,
-  tickTime,
+  clockSkew = 0,
+  zoneRevision,
+  liveSamples,
   devices = [],
   focusLineId,
   focusZoneId,
@@ -80,7 +85,12 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
   const [showStations, setShowStations] = useState(true);
   const [selectedTrack, setSelectedTrack] = useState<string>('all');
   const [spaghettiMin, setSpaghettiMin] = useState(15);
-  const [history, setHistory] = useState<Record<string, TrackPoint[]>>({});
+  const [history, setHistory] = useState<TrackSamples>({});
+  const [policy, setPolicy] = useState<TrajectoryPolicy | null>(null);
+  const [historyKey, setHistoryKey] = useState('');
+  const [historyError, setHistoryError] = useState(false);
+  const [clock, setClock] = useState(Date.now);
+  const heatMask = useId();
   const [zoneLog, setZoneLog] = useState<ZoneLogEntry[]>([]);
   const [scope, setScope] = useState<Scope>({ kind: 'plant' });
 
@@ -92,41 +102,54 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
 
   const membership = useRef<Record<string, string | null>>({});
   const calibrationKey = floorPlan?.calibration.revision_key;
+  const geometryKey = `${calibrationKey ?? ''}:${zoneRevision ?? ''}`;
+  const now = clock + clockSkew;
+  const skewRef = useRef(clockSkew);
+  useEffect(() => { skewRef.current = clockSkew; }, [clockSkew]);
   useEffect(() => {
-    let active = true;
+    const id = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
     membership.current = {};
     setHistory({});
+    setPolicy(null);
+    setHistoryKey('');
+    setHistoryError(false);
     setZoneLog([]);
     setSelectedTrack('all');
     if (calibrationKey) {
-      api.getTrackHistory(HISTORY_MINUTES)
-        .then((h) => { if (active) setHistory((prev) => ({ ...h, ...mergeLive(prev, h) })); })
-        .catch(console.error);
+      api.getTrackHistory(HISTORY_MINUTES, controller.signal)
+        .then((h) => {
+          if (controller.signal.aborted || h.calibration_key !== calibrationKey || (zoneRevision && h.zone_revision !== zoneRevision)) return;
+          setPolicy(h.trajectory);
+          setHistoryKey(geometryKey);
+          setHistory((prev) => mergeTrackSamples(h.tracks, prev, Date.now() + skewRef.current - HISTORY_MINUTES * 60_000));
+        })
+        .catch(() => { if (!controller.signal.aborted) setHistoryError(true); });
     }
-    return () => { active = false; };
-  }, [calibrationKey]);
+    return () => controller.abort();
+  }, [calibrationKey, zoneRevision, geometryKey]);
 
   useEffect(() => {
-    const t = tickTime ?? Date.now();
-    setHistory((prev) => {
-      const next = { ...prev };
-      Object.entries(tracks).forEach(([id, pt]) => {
-        const h = next[id] ?? [];
-        const last = h[h.length - 1];
-        if (last && t <= last[2]) return;
-        if (!last || Math.abs(last[0] - pt.x) > 0.002 || Math.abs(last[1] - pt.y) > 0.002 || t - last[2] > 10_000) {
-          const cutoff = t - HISTORY_MINUTES * 60_000;
-          next[id] = [...h.filter((p) => p[2] >= cutoff).slice(-2000), [pt.x, pt.y, t]];
-        }
-      });
-      return next;
-    });
+    if (liveSamples) {
+      const cutoff = Date.now() + skewRef.current - HISTORY_MINUTES * 60_000;
+      setHistory((prev) => mergeTrackSamples(prev, liveSamples, cutoff));
+    }
+  }, [liveSamples]);
 
-    // Bitácora de entradas/salidas por estación (emula las lecturas del RC522)
+  useEffect(() => {
+    // La bitácora registra cambios observados, no salidas inferidas al perder señal.
     if (zones.length === 0) return;
-    const now = Date.now();
     const events: ZoneLogEntry[] = [];
+    Object.keys(membership.current).forEach((id) => { if (!tracks[id]) delete membership.current[id]; });
     Object.entries(tracks).forEach(([id, pt]) => {
+      const now = pt.observed_at_ms;
+      if (zones.some((z) => z.is_aggregated_only && pointInPolygon(pt.x, pt.y, z.polygon))) {
+        delete membership.current[id];
+        return;
+      }
       const z = zones.find((zz) => zz.type === 'work' && pointInPolygon(pt.x, pt.y, zz.polygon));
       const prev = membership.current[id];
       const cur = z?.id ?? null;
@@ -142,7 +165,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
       }
     });
     if (events.length) setZoneLog((l) => [...l.slice(-200), ...events]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks, zones]);
 
   /* ── alcance: planta → línea → estación ── */
@@ -299,35 +321,38 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
   /* ── datos derivados ── */
   const metricFor = (st?: Station) => (st ? stationMetrics.find((m) => m.station_id === st.station_id) : undefined);
   const statusFor = (st: Station) => metricFor(st)?.current_status ?? 'unknown';
-  const privateZones = zones.filter((z) => z.is_aggregated_only);
-  const isPrivate = (x: number, y: number) => privateZones.some((z) => pointInPolygon(x, y, z.polygon));
+  const privatePolys = useMemo(() => zones.filter((z) => z.is_aggregated_only || z.type === 'bathroom').map((z) => z.polygon), [zones]);
+  const isPrivate = (x: number, y: number) => privatePolys.some((p) => pointInPolygon(x, y, p));
   const visibleTrack = (id: string) => selectedTrack === 'all' || selectedTrack === id;
 
   const windowed = useMemo(() => {
-    let maxT = 0;
-    Object.values(history).forEach((pts) => pts.length && (maxT = Math.max(maxT, pts[pts.length - 1][2])));
-    const from = maxT - spaghettiMin * 60_000;
-    const out: Record<string, TrackPoint[]> = {};
-    Object.entries(history).forEach(([id, pts]) => (out[id] = pts.filter((p) => p[2] >= from)));
-    return out;
-  }, [history, spaghettiMin]);
+    if (historyKey !== geometryKey) return {};
+    const from = now - spaghettiMin * 60_000;
+    return Object.fromEntries(Object.entries(history).map(([id, pts]) => [id, pts.filter((p) => p[2] >= from && p[2] <= now)]));
+  }, [history, now, spaghettiMin, historyKey, geometryKey]);
 
   const runs = useMemo(() => {
-    if (!scopePoly) return {};
-    const out: Record<string, TrackPoint[][]> = {};
-    Object.entries(windowed).forEach(([id, pts]) => (out[id] = runsInside(pts, scopePoly).filter((r) => r.length > 1)));
-    return out;
-  }, [windowed, scopePoly]);
+    if (!policy || !scaleConfirmed) return {};
+    return Object.fromEntries(Object.entries(windowed).map(
+      ([id, pts]) => [id, runsInside(pts, scopePoly, privatePolys, mPerX, mPerY, policy)],
+    ));
+  }, [windowed, scopePoly, privatePolys, mPerX, mPerY, policy, scaleConfirmed]);
 
   const scopeStats = useMemo(() => {
-    if (!scopePoly) return [];
-    return Object.entries(windowed)
-      .map(([id, pts]) => ({ id, ...statsInside(pts, scopePoly, mPerX, mPerY) }))
-      .filter((r) => r.entries > 0)
+    if (!scopePoly || !policy) return [];
+    return Object.entries(runs)
+      .map(([id, parts]) => ({ id, ...statsInside(parts, mPerX, mPerY, policy) }))
+      .filter((r) => r.seconds > 0)
       .sort((a, b) => b.meters - a.meters);
-  }, [windowed, scopePoly, mPerX, mPerY]);
+  }, [runs, scopePoly, mPerX, mPerY, policy]);
+  const heat = useMemo(() => showHeatmap && policy ? heatCells(runs, heatMode, selectedTrack, mPerX, mPerY, policy) : [],
+    [runs, showHeatmap, heatMode, selectedTrack, mPerX, mPerY, policy]);
 
-  const insideScope = scopeZone ? Object.keys(tracks).filter((id) => pointInPolygon(tracks[id].x, tracks[id].y, scopeZone.polygon)) : [];
+  const currentTracks = Object.fromEntries(Object.entries(tracks).filter(([, p]) =>
+    policy && p.observed_at_ms <= now && now - p.observed_at_ms <= policy.max_gap_s * 1000 && !isPrivate(p.x, p.y),
+  ));
+  const trackOptions = Object.keys(runs).filter((id) => runs[id].length > 0);
+  const insideScope = scopeZone ? Object.keys(currentTracks).filter((id) => pointInPolygon(currentTracks[id].x, currentTracks[id].y, scopeZone.polygon)) : [];
   const scopeStation = scopeZone ? stationOfZone(scopeZone, stations) : undefined;
   const scopeItems = useMemo(
     () => (scopeZone ? interiorOf(scopeZone, scopeStation, mPerX, mPerY) : []),
@@ -436,10 +461,10 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
               <div>
                 <label className="label">Track</label>
                 <select value={selectedTrack} onChange={(e) => setSelectedTrack(e.target.value)} className="field">
-                  <option value="all">Todos ({Object.keys(tracks).length})</option>
-                  {Object.keys(tracks).map((t) => (
+                  <option value="all">Todos ({trackOptions.length})</option>
+                  {trackOptions.map((t) => (
                     <option key={t} value={t}>
-                      {t} · {tracks[t]?.name}
+                      {t}
                     </option>
                   ))}
                 </select>
@@ -493,6 +518,12 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                   <stop offset="0%" stopColor={C.plum} stopOpacity="0.30" />
                   <stop offset="100%" stopColor={C.plum} stopOpacity="0" />
                 </radialGradient>
+                <mask id={heatMask} maskUnits="userSpaceOnUse" x={0} y={0} width={PLAN_W} height={planH}>
+                  {scopePoly
+                    ? <polygon fill="white" points={scopePoly.map(([x, y]) => `${x * PLAN_W},${y * planH}`).join(' ')} />
+                    : <rect width={PLAN_W} height={planH} fill="white" />}
+                  {privatePolys.map((polygon, i) => <polygon key={i} fill="black" points={polygon.map(([x, y]) => `${x * PLAN_W},${y * planH}`).join(' ')} />)}
+                </mask>
               </defs>
 
               <rect x={-PLAN_W} y={-planH} width={PLAN_W * 3} height={planH * 3} fill="url(#fp-grid5)" />
@@ -575,27 +606,15 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
               })}
 
               {/* Calor */}
-              {showHeatmap &&
-                Object.entries(windowed).map(([id, pts]) =>
-                  visibleTrack(id)
-                    ? pts
-                        .filter((p, i) => i % 3 === 0 && !isPrivate(p[0], p[1]) && (!scopePoly || pointInPolygon(p[0], p[1], scopePoly)))
-                        .map(([x, y, t], i, samples) => {
-                          const dwellSeconds = Math.max(0, Math.min(10, ((samples[i + 1]?.[2] ?? t) - t) / 1000));
-                          const radius = heatMode === 'dwell' ? 24 + dwellSeconds * 2.2 : 32;
-                          return (
-                            <circle
-                              key={`h-${id}-${i}`}
-                              cx={x * PLAN_W}
-                              cy={y * planH}
-                              r={radius}
-                              fill={`url(#fp-heat-${heatMode})`}
-                              pointerEvents="none"
-                            />
-                          );
-                        })
-                    : null,
-                )}
+              {showHeatmap && <g mask={`url(#${heatMask})`} pointerEvents="none">
+                {heat.map(({ key, x, y, weight }) => (
+                  <circle key={key} cx={x * PLAN_W} cy={y * planH} r={32}
+                    opacity={Math.min(1, 0.2 * Math.log1p(weight))}
+                    fill={`url(#fp-heat-${heatMode})`}>
+                    <title>{heatMode === 'traffic' ? `${weight} muestras` : `${weight.toFixed(1)} segundos acumulados`}</title>
+                  </circle>
+                ))}
+              </g>}
 
               {/* Detalle de estación */}
               {scopeZone && !scopeZone.is_aggregated_only && scopeItems.length > 0 && (
@@ -640,10 +659,10 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 })}
 
               {/* Spaghetti: solo dentro de la línea o estación seleccionada */}
-              {showSpaghetti &&
+              {showSpaghetti && !showHeatmap && scopePoly &&
                 Object.entries(runs).map(([id, rs]) =>
                   visibleTrack(id)
-                    ? rs.map((r, i) => (
+                    ? rs.filter((r) => r.length > 1).map((r, i) => (
                         <path
                           key={`s-${id}-${i}`}
                           d={r.map(([x, y], j) => `${j ? 'L' : 'M'}${x * PLAN_W} ${y * planH}`).join(' ')}
@@ -661,15 +680,13 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 )}
 
               {/* Posición actual */}
-              {Object.entries(tracks).map(([id, p]) => {
+              {Object.entries(currentTracks).map(([id, p]) => {
                 if (!visibleTrack(id)) return null;
-                const priv = isPrivate(p.x, p.y);
                 const outOfScope = scopePoly && !pointInPolygon(p.x, p.y, scopePoly);
                 const color = trackColor(id);
                 return (
                   <g key={`t-${id}`} transform={`translate(${p.x * PLAN_W},${p.y * planH})`} pointerEvents="none" opacity={outOfScope ? 0.35 : 1}>
-                    <circle r={px(6)} fill={priv ? C.ink4 : color} stroke={C.surface} strokeWidth={px(2)} />
-                    {!priv && (
+                    <circle r={px(6)} fill={color} stroke={C.surface} strokeWidth={px(2)} />
                       <text
                         y={-px(10)}
                         textAnchor="middle"
@@ -683,7 +700,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                       >
                         {id}
                       </text>
-                    )}
                   </g>
                 );
               })}
@@ -695,8 +711,10 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
             <div className="h-[5px] border border-ink border-t-0" style={{ width: ppu * unit * scaleM }} />
           </div>
           <div className="absolute right-3 bottom-3 text-[11px] text-ink-3 pointer-events-none text-right max-w-[65%]">
-            {showHeatmap
-              ? `Calor de ${heatMode === 'traffic' ? 'tránsito (posiciones)' : 'permanencia (tiempo)'} · sin zonas sensibles`
+            {historyError ? 'Historial de visión no disponible'
+              : showHeatmap
+              ? heat.length === 0 ? 'Sin observaciones suficientes en esta ventana'
+                : `${heatMode === 'traffic' ? 'Tránsito: muestras capturadas' : 'Permanencia: tiempo entre capturas válidas'} · sin zonas sensibles`
               : scope.kind === 'plant' && showSpaghetti
                 ? 'El spaghetti se segmenta por línea o zona para evitar saturación'
                 : 'Tracks anónimos · zonas sensibles solo en conteo agregado'}
@@ -712,9 +730,9 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 stationZones={lineStationZones(scopeLine.id)}
                 stats={scopeStats}
                 scaleConfirmed={scaleConfirmed}
-                windowed={windowed}
+                runs={runs}
                 minutes={spaghettiMin}
-                tracks={tracks}
+                tracks={currentTracks}
                 mPerX={mPerX}
                 mPerY={mPerY}
               />
@@ -727,7 +745,7 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                 devices={devices}
                 insideIds={insideScope}
                 scaleConfirmed={scaleConfirmed}
-                tracks={tracks}
+                tracks={currentTracks}
                 log={zoneLog}
                 stops={stops}
                 mPerX={mPerX}
@@ -736,7 +754,7 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
                   !scopeZone.is_aggregated_only && (
                     <div className="px-4 pt-3 pb-1 border-b border-line">
                       <div className="eyebrow">Spaghetti en esta zona · {spaghettiMin} min</div>
-                      <TrackStatsTable rows={scopeStats} tracks={tracks} scaleConfirmed={scaleConfirmed} empty="Sin recorridos observados en la ventana." />
+                      <TrackStatsTable rows={scopeStats} tracks={currentTracks} scaleConfirmed={scaleConfirmed} empty="Sin recorridos observados en la ventana." />
                     </div>
                   )
                 }
@@ -748,17 +766,6 @@ export const FloorPlan2D: React.FC<FloorPlan2DProps> = ({
     </section>
   );
 };
-
-// La carga inicial no debe borrar puntos en vivo que llegaron mientras tanto.
-function mergeLive(prev: Record<string, TrackPoint[]>, loaded: Record<string, TrackPoint[]>) {
-  const out: Record<string, TrackPoint[]> = {};
-  Object.entries(prev).forEach(([id, live]) => {
-    const base = loaded[id] ?? [];
-    const lastT = base.length ? base[base.length - 1][2] : -Infinity;
-    out[id] = [...base, ...live.filter((p) => p[2] > lastT)];
-  });
-  return out;
-}
 
 /* ───────────── tablas del panel lateral ───────────── */
 
@@ -777,7 +784,7 @@ const TrackStatsTable: React.FC<{
           <th className="font-normal pb-1">Track</th>
           <th className="font-normal pb-1 text-right">Distancia est.</th>
           <th className="font-normal pb-1 text-right">Tiempo</th>
-          <th className="font-normal pb-1 text-right">Entradas</th>
+          <th className="font-normal pb-1 text-right">Tramos</th>
         </tr>
       </thead>
       <tbody>
@@ -804,23 +811,25 @@ const LineReadout: React.FC<{
   stationZones: { z: PolygonZone; st?: Station }[];
   stats: { id: string; meters: number; seconds: number; entries: number }[];
   scaleConfirmed: boolean;
-  windowed: Record<string, TrackPoint[]>;
+  runs: Record<string, TrackPoint[][]>;
   minutes: number;
   tracks: Record<string, Track>;
   mPerX: number;
   mPerY: number;
-}> = ({ line, area, stationZones, stats, scaleConfirmed, windowed, minutes, tracks, mPerX, mPerY }) => {
+}> = ({ line, area, stationZones, stats, scaleConfirmed, runs, minutes, tracks, mPerX, mPerY }) => {
   const b = bbox(area);
   const zonesOnly = stationZones.map((x) => x.z);
 
   const matrix = useMemo(() => {
     const total: Record<string, number> = {};
-    Object.values(windowed).forEach((pts) => {
-      Object.entries(stationTransitions(pts, zonesOnly)).forEach(([k, v]) => (total[k] = (total[k] ?? 0) + v));
+    Object.values(runs).forEach((parts) => {
+      for (const pts of parts) {
+        Object.entries(stationTransitions(pts, zonesOnly)).forEach(([k, v]) => (total[k] = (total[k] ?? 0) + v));
+      }
     });
     return total;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [windowed, stationZones]);
+  }, [runs, stationZones]);
 
   const totalTrips = Object.values(matrix).reduce((a, v) => a + v, 0);
   const maxCell = Math.max(1, ...Object.values(matrix));

@@ -107,6 +107,7 @@ class ScaleCalibration(BaseModel):
     is_calibrated: bool = False
     frame_revision: str = "initial"
     revision_key: str = ""
+    zone_revision: str = ""
 
 class FloorPlanBase(BaseModel):
     name: str = "Línea 1 - Ensamble Electrónico"

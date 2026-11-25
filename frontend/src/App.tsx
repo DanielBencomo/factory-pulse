@@ -16,6 +16,7 @@ import { CamerasPage } from './pages/CamerasPage';
 import { JustifyStopModal } from './components/JustifyStopModal';
 import { api } from './services/api';
 import { wsClient } from './services/websocket';
+import type { Track } from './components/StationDetail';
 import {
   Analytics,
   FloorPlan,
@@ -33,6 +34,7 @@ import {
   SpatialLayer,
   SpatialSummary,
   CameraConfig,
+  TrackSamples,
 } from './types';
 
 // ECharts pesa mucho y solo se necesita al abrir Métricas. Cargar esa página
@@ -44,7 +46,7 @@ const pageFromHash = (): Page => {
   return PAGES.some((p) => p.id === h) ? h : 'planta';
 };
 
-type LiveTracks = Record<string, { x: number; y: number; name: string }>;
+type LiveTracks = Record<string, Track>;
 const NO_TRACKS: LiveTracks = {};
 
 export const App: React.FC = () => {
@@ -75,9 +77,11 @@ export const App: React.FC = () => {
   const [mapLayer, setMapLayer] = useState<SpatialLayer | null>(null);
   const [mapRequestVersion, setMapRequestVersion] = useState(0);
 
-  const [tickTime, setTickTime] = useState<number | undefined>(undefined);
-  const [trackBatch, setTrackBatch] = useState<{ key: string; tracks: LiveTracks } | null>(null);
-  const tracks = trackBatch && trackBatch.key === floorPlan?.calibration.revision_key ? trackBatch.tracks : NO_TRACKS;
+  const [clockSkew, setClockSkew] = useState(0);
+  const [trackBatch, setTrackBatch] = useState<{ key: string; revision: string; tracks: LiveTracks; samples: TrackSamples } | null>(null);
+  const activeTrackBatch = trackBatch?.key === floorPlan?.calibration.revision_key
+    && trackBatch?.revision === floorPlan?.calibration.zone_revision ? trackBatch : null;
+  const tracks = activeTrackBatch?.tracks ?? NO_TRACKS;
   const telemetryGeneration = useRef(0);
   const layoutRequest = useRef(0);
 
@@ -196,8 +200,13 @@ export const App: React.FC = () => {
     };
     const off = wsClient.subscribe((msg) => {
       if (msg.type === 'TRACKS') {
-        if (msg.tracks && typeof msg.calibration_key === 'string') setTrackBatch({ key: msg.calibration_key, tracks: msg.tracks });
-        if (msg.observed_at) setTickTime(Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(msg.observed_at) ? msg.observed_at : `${msg.observed_at}Z`));
+        if (msg.tracks && msg.samples && typeof msg.calibration_key === 'string' && typeof msg.zone_revision === 'string') {
+          setTrackBatch({ key: msg.calibration_key, revision: msg.zone_revision, tracks: msg.tracks, samples: msg.samples });
+        }
+        if (msg.observed_at) {
+          const at = Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(msg.observed_at) ? msg.observed_at : `${msg.observed_at}Z`);
+          if (Number.isFinite(at)) setClockSkew(at - Date.now());
+        }
       } else if (msg.type === 'CALIBRATION_CHANGED') {
         telemetryGeneration.current++;
         setTrackBatch(null);
@@ -208,7 +217,11 @@ export const App: React.FC = () => {
         refreshAnalytics();
         refreshSpatial();
       } else if (msg.type === 'LAYOUT_UPDATED') {
+        setTrackBatch(null);
+        telemetryGeneration.current++;
         refreshLayout().catch(console.error);
+        refreshAnalytics();
+        refreshSpatial();
       } else if (msg.type === 'DEVICE_CONNECTED') {
         refreshDevices();
         refreshCameras();
@@ -306,7 +319,9 @@ export const App: React.FC = () => {
               stationMetrics={metrics?.stations}
               stops={stops}
               tracks={tracks}
-              tickTime={tickTime}
+              clockSkew={clockSkew}
+              zoneRevision={floorPlan?.calibration.zone_revision}
+              liveSamples={activeTrackBatch?.samples}
               devices={devices}
 
               focusLineId={focusLineId}

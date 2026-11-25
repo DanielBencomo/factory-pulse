@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -12,17 +11,39 @@ from app.models.domain import EventType, EventMode
 from app.ws.manager import ws_manager
 from app.devices.registry import touch_device
 from app.live.effects import apply_event_effects
+from app.cameras.calibration import active_revisions
+from app.cameras.observations import VisionIngestPolicy, is_vision, vision_payload, vision_zones, zone_revision
+from app.calculations.evidence import floor_position
 
 router = APIRouter()
 
 @router.post("/events", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(get_db)):
-    """
-    Ingests a single event with deduplication by event_id.
-    Broadcasts new event to all WebSocket clients in real-time.
-    """
     if event_in.mode != EventMode.LIVE:
         raise HTTPException(status_code=422, detail="Solo se aceptan eventos en vivo")
+    policy = await _vision_policy([event_in], session)
+    if policy and not policy.allows(event_in.type.value, event_in.device_id, event_in.payload):
+        raise HTTPException(status_code=422, detail="Medición de visión incompatible con la geometría o privacidad vigente")
+    notifications = []
+    result = await _store_event(event_in, session, notifications)
+    await _commit_events(session, notifications)
+    return result
+
+
+async def _vision_policy(events: List[EventIngest], session: AsyncSession) -> VisionIngestPolicy | None:
+    if any(is_vision(event.type.value, event.payload) for event in events):
+        return await VisionIngestPolicy.load(session)
+    return None
+
+
+async def _commit_events(session: AsyncSession, notifications: list[dict]) -> None:
+    await session.commit()
+    for message in notifications:
+        await ws_manager.broadcast(message)
+
+
+async def _store_event(event_in: EventIngest, session: AsyncSession, notifications: list[dict]) -> EventResponse:
+    payload = vision_payload(event_in.type.value, event_in.payload)
     # 1. Deduplication check
     stmt = select(DBEvent).where(DBEvent.event_id == event_in.event_id)
     res = await session.execute(stmt)
@@ -30,6 +51,10 @@ async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(ge
     if existing:
         if existing.mode != EventMode.LIVE.value:
             raise HTTPException(status_code=409, detail="El ID pertenece a un registro histórico no operativo")
+        if (is_vision(existing.type, existing.payload) or is_vision(event_in.type.value, event_in.payload)) and (
+            existing.type != event_in.type.value or existing.device_id != event_in.device_id or existing.payload != payload
+        ):
+            raise HTTPException(status_code=409, detail="El ID pertenece a otra medición de visión")
         # Idempotent response: return existing event without double insertion
         return EventResponse(
             id=existing.id,
@@ -56,7 +81,7 @@ async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(ge
         occurred_at=occurred,
         received_at=datetime.utcnow(),
         type=event_in.type.value,
-        payload=event_in.payload,
+        payload=payload,
         quality=event_in.quality,
         mode=event_in.mode.value
     )
@@ -65,10 +90,9 @@ async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(ge
         # Un evento real también cuenta como señal de vida del dispositivo.
         await touch_device(session, event_in.device_id)
     effect = await apply_event_effects(session, db_event) if db_event.mode == "live" else None
-    await session.commit()
-    await session.refresh(db_event)
+    await session.flush()
     if effect:
-        await ws_manager.broadcast({"type": effect})
+        notifications.append({"type": effect})
 
     # Las posiciones llegan varias veces por segundo: el procesador en vivo difunde
     # un resumen por segundo, así que no se reenvían una por una.
@@ -80,7 +104,7 @@ async def ingest_event(event_in: EventIngest, session: AsyncSession = Depends(ge
         )
 
     # Broadcast via WebSocket
-    await ws_manager.broadcast({
+    notifications.append({
         "type": "NEW_EVENT",
         "event": {
             "id": db_event.id,
@@ -116,10 +140,14 @@ async def ingest_events_batch(events_in: List[EventIngest], session: AsyncSessio
     """
     if any(event.mode != EventMode.LIVE for event in events_in):
         raise HTTPException(status_code=422, detail="Solo se aceptan eventos en vivo")
+    policy = await _vision_policy(events_in, session)
     responses = []
+    notifications: list[dict] = []
     for ev_in in events_in:
-        ev_res = await ingest_event(ev_in, session)
-        responses.append(ev_res)
+        if policy and not policy.allows(ev_in.type.value, ev_in.device_id, ev_in.payload):
+            continue  # no se guarda; el conteo agregado válido del lote permanece
+        responses.append(await _store_event(ev_in, session, notifications))
+    await _commit_events(session, notifications)
     return responses
 
 @router.get("/events", response_model=List[EventResponse])
@@ -143,6 +171,10 @@ async def list_events(
     res = await session.execute(stmt)
     events = res.scalars().all()
 
+    if any(e.type == "position" for e in events):
+        layout_revision = zone_revision(await vision_zones(session))
+        revisions = await active_revisions(session)
+        events = [e for e in events if e.type != "position" or floor_position(e.payload, e.device_id, revisions, layout_revision)]
     return [
         EventResponse(
             id=e.id,

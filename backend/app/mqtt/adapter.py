@@ -9,6 +9,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models.db_models import DBEvent
 from app.ws.manager import ws_manager
+from app.cameras.observations import VisionIngestPolicy, is_vision, vision_payload
 
 logger = logging.getLogger("factory_pulse.mqtt")
 
@@ -66,7 +67,7 @@ class MQTTAdapter:
         try:
             payload_str = msg.payload.decode("utf-8")
             data = json.loads(payload_str)
-            logger.debug(f"Received MQTT message on {msg.topic}: {data}")
+            logger.debug("Received MQTT message on %s", msg.topic)
 
             # Schedule async task to store event in SQLite & broadcast
             asyncio.create_task(self._process_mqtt_event(data, msg.topic))
@@ -84,14 +85,23 @@ class MQTTAdapter:
             async with AsyncSessionLocal() as session:
                 if data.get("mode", "live") != "live":
                     return
+                event_type = data.get("type", "presence")
+                device = data.get("device_id", "mqtt-device")
+                payload = data.get("payload", {})
+                if not isinstance(payload, dict):
+                    return
+                if is_vision(event_type, payload):
+                    policy = await VisionIngestPolicy.load(session)
+                    if not policy.allows(event_type, device, payload):
+                        return
                 ev = DBEvent(
                     event_id=event_id,
-                    device_id=data.get("device_id", "mqtt-device"),
+                    device_id=device,
                     source_id=f"mqtt:{topic}",
                     occurred_at=occurred_at,
                     received_at=datetime.utcnow(),
-                    type=data.get("type", "presence"),
-                    payload=data.get("payload", {}),
+                    type=event_type,
+                    payload=vision_payload(event_type, payload),
                     quality=float(data.get("quality", 1.0)),
                     mode="live"
                 )

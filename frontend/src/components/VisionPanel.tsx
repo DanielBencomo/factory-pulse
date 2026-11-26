@@ -11,6 +11,7 @@ type VisionHealth = {
   model?: string;
   fps?: number;
   tracks?: number;
+  continuity?: { window_s: number; created: number; recovered: number; rejected: number };
   detections?: number;
   zones?: number;
   calibration_revision?: string | null;
@@ -153,7 +154,7 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
             <span className={`dot ${online ? 'bg-ok' : 'bg-ink-4'}`} /> {statusLabel}
           </span>
           {online && <span className="chip chip-muted num">{health?.fps?.toFixed(1) ?? '—'} FPS</span>}
-          {online && <span className="chip chip-brand num">{health?.tracks ?? 0} tracks</span>}
+          {online && <span className="chip chip-brand num">{health?.tracks ?? '—'} IDs activos</span>}
         </div>
       </header>
 
@@ -196,6 +197,13 @@ export const VisionPanel: React.FC<VisionPanelProps> = ({
 
       <footer className="px-3.5 py-2.5 border-t border-line flex flex-wrap items-center gap-2 text-[11.5px] text-ink-3">
         <span>{health?.calibration_revision ? `${health.zones ?? 0} zonas proyectadas` : 'Calibración de piso pendiente'}</span>
+        {online && health?.continuity && (
+          <span title="Totales de este arranque. Recuperar un ID no rellena ni mide el hueco de video.">
+            {health.continuity.window_s > 0 ? (
+              <>IDs recuperados: {health.continuity.recovered} · descartes de asociación: {health.continuity.rejected}</>
+            ) : 'Recuperación de IDs inactiva'}
+          </span>
+        )}
         {online && health?.backend_ok === false && <span className="text-bad">La cámara funciona, pero no alcanza el backend.</span>}
         <div className="ml-auto flex flex-wrap gap-1.5">
           {camera?.configured && (

@@ -167,11 +167,45 @@ Las zonas marcadas `is_aggregated_only` no generan una trayectoria individual:
 se muestra presencia anónima, pero se suprime el ID y no se publica la posición
 individual dentro de esa zona.
 
+## Continuidad del tracking
+
+En una cámara con calibración administrada, Factory Pulse asigna su propio ID
+anónimo por arranque. ByteTrack aporta las detecciones y su ID interno, pero
+ese ID no se usa como identidad permanente.
+
+| Situación | Qué ocurre |
+|---|---|
+| Detecciones consecutivas compatibles | Se mantiene el ID y continúa el tramo. |
+| Oclusión breve y una única coincidencia espacial plausible | Puede recuperarse el ID aunque ByteTrack entregue otro, pero empieza un tramo nuevo. |
+| Hay alternativas, se vence la ventana o se sale cerca del borde calibrado | Se asigna un ID nuevo; no se deduce quién volvió. |
+| Zona sensible, nueva geometría, reconexión o reinicio | Se corta la asociación. En la zona sensible solo se publica el conteo. |
+
+Por defecto, la recuperación permite hasta **1.5 s** y **0.8 m** en el piso,
+también limitada por la velocidad plausible. Ambos puntos deben estar a más
+de 0.8 m del perímetro calibrado y de zonas sensibles. El modo manual permite
+`--recovery-seconds 0` para apagar la recuperación, o una ventana de hasta
+2 s. Si la zona visible es pequeña, puede no quedar espacio apto para recuperar.
+No se usan rasgos biométricos, no se predicen puntos ni se intenta unir cámaras.
+Que se recupere el ID es una asociación geométrica probable, no una confirmación
+de identidad. Dos personas que se sustituyen en el mismo punto sin ser vistas
+siguen siendo indistinguibles para una sola cámara.
+
+### Verificación con el teléfono por RTSP
+
+Fija y calibra el teléfono. En el interior de la cobertura, tapa brevemente a una
+persona (menos de 1.5 s) y verifica su reaparición cerca del último punto:
+el ID puede mantenerse, pero el espagueti debe quedar cortado. Repite con dos
+personas apareciendo cerca del último punto, con una ausencia superior a 2 s
+y después de reconectar RTSP: no debería heredarse el ID en esos casos.
+Comprueba también que ningún ID ni punto del plano se publique dentro de una zona
+sensible. El videowall muestra recuperaciones y asociaciones descartadas desde
+el arranque; esos contadores no sustituyen comparar contra el video observado.
+
 ## Endpoints del proveedor
 
 | Ruta | Contenido |
 |---|---|
-| `/vision/health` | Estado, FPS, tracks, zonas y calibración |
+| `/vision/health` | Estado, FPS, IDs activos, zonas, calibración y contadores de continuidad |
 | `/vision/annotated.mjpg` | Cámara con detecciones y zonas |
 | `/vision/raw.mjpg` | Cámara limpia sin overlays |
 | `/vision/floor.mjpg` | Plano 2D y spaghetti |

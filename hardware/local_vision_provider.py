@@ -9,7 +9,6 @@ Ejemplos::
     python local_vision_provider.py --source webcam
     python local_vision_provider.py --source 1
     python local_vision_provider.py --source rtsp://192.168.1.50:8554/live
-    python local_vision_provider.py --source video.mp4
 
 Calibración de cuatro puntos::
 
@@ -42,13 +41,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 from urllib.parse import quote, urlsplit, urlunsplit
 
+if __package__:
+    from .track_continuity import DEFAULT_RECOVERY_S, RECOVERY_RADIUS_M, Observation, TrackingContinuity, edge_distance
+else:
+    from track_continuity import DEFAULT_RECOVERY_S, RECOVERY_RADIUS_M, Observation, TrackingContinuity, edge_distance
+
 try:
     import requests
 except ImportError:  # permite consultar --help sin instalar visión
     requests = None  # type: ignore[assignment]
 
 
-VERSION = "vision-yolo-0.6.1"
+VERSION = "vision-yolo-0.7.0"
 
 DETECTION_PROFILES: dict[str, dict[str, Any]] = {
     "fast": {"model": "yolo11n.pt", "confidence": 0.28, "iou": 0.55, "image_size": 640},
@@ -151,15 +155,13 @@ class PersonDetection:
     confidence: float
     foot_x: float
     foot_y: float
+    raw_id: int | None = None
     floor_x: float | None = None
     floor_y: float | None = None
     zone: Zone | None = None
     speed_m_s: float | None = None
     segment_id: str | None = None
     matching_zones: tuple[str, ...] = ()
-    # YOLO puede detectar una persona antes de que ByteTrack le asigne ID. Se
-    # dibuja y cuenta, pero no se publica como trayectoria hasta confirmarse.
-    confirmed: bool = True
 
 
 @dataclass(slots=True)
@@ -608,17 +610,15 @@ class YoloByteTracker:
             x1, y1, x2, y2 = (round(v) for v in xyxy)
             foot_x = (x1 + x2) / 2.0
             foot_y = float(y2)
-            confirmed = number is not None
-            track_number = int(number) if confirmed else 0
             detections.append(
                 PersonDetection(
-                    track_id=(f"{self.track_prefix}-P{track_number}" if confirmed else f"{self.track_prefix}-pending-{index}"),
-                    track_number=track_number,
+                    track_id=f"{self.track_prefix}-pending-{index}",
+                    track_number=0,
                     box=(x1, y1, x2, y2),
                     confidence=float(score),
                     foot_x=foot_x,
                     foot_y=foot_y,
-                    confirmed=confirmed,
+                    raw_id=int(number) if number is not None else None,
                 )
             )
         return detections
@@ -802,6 +802,8 @@ class VisionRenderer:
     def __init__(
         self,
         calibration: FloorCalibration,
+        continuity: TrackingContinuity,
+        track_prefix: str,
         sample_interval: float,
         min_step: float,
         camera_trails: bool = False,
@@ -812,6 +814,8 @@ class VisionRenderer:
         self.cv2 = cv2
         self.np = np
         self.calibration = calibration
+        self.continuity = continuity
+        self.track_prefix = track_prefix
         self.sample_interval = sample_interval
         self.min_step = min_step
         self.camera_trails = camera_trails
@@ -828,22 +832,46 @@ class VisionRenderer:
         zones: list[Zone], now: float, max_gap_s: float, max_speed_m_s: float,
     ) -> None:
         height, width = frame_shape[:2]
+        width_m, height_m = self.calibration.width_m, self.calibration.height_m
+        private_polys = [
+            [(x * width_m, y * height_m) for x, y in zone.polygon] for zone in zones if zone.is_aggregated_only
+        ]
+        registration = self.calibration.registration
+        coverage = [(x * width_m, y * height_m) for x, y in registration["floor_hull"]] if registration else []
+        samples = []
         active_positions = {}
         for detection in detections:
             x, y = self.calibration.camera_to_floor(
                 detection.foot_x, detection.foot_y, width, height
             )
-            detection.floor_x, detection.floor_y = x, y
-            if not (-0.05 <= x <= 1.05 and -0.05 <= y <= 1.05):
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                samples.append(Observation(detection.raw_id, None))
                 continue
+            detection.floor_x, detection.floor_y = x, y
             matches = [zone for zone in zones if point_in_polygon(x, y, zone.polygon)]
             detection.matching_zones = tuple(zone.zone_id for zone in matches)
             detection.zone = next((zone for zone in matches if zone.is_aggregated_only), matches[0] if matches else None)
-            if not detection.confirmed or (detection.zone and detection.zone.is_aggregated_only):
+            if detection.zone and detection.zone.is_aggregated_only:
+                samples.append(Observation(detection.raw_id, None))
                 continue
+            point_m = (x * width_m, y * height_m)
+            recoverable = (
+                bool(coverage) and edge_distance(point_m, coverage) > RECOVERY_RADIUS_M
+                and all(edge_distance(point_m, p) > RECOVERY_RADIUS_M for p in private_polys)
+            )
+            samples.append(Observation(detection.raw_id, point_m, recoverable))
+
+        identities = self.continuity.update(
+            samples, at=now, max_gap_s=max_gap_s, max_speed_m_s=max_speed_m_s, private_polys=private_polys,
+        )
+        for index, identity in identities.items():
+            detection = detections[index]
+            x, y = detection.floor_x, detection.floor_y
+            detection.track_number = identity.number
+            detection.track_id = f"{self.track_prefix}-P{identity.number}"
             previous_speed = self._last_speed_position.get(detection.track_id)
             segment_id = None
-            if previous_speed and 0 < now - previous_speed.timestamp <= max_gap_s:
+            if not identity.recovered and previous_speed and 0 < now - previous_speed.timestamp <= max_gap_s:
                 dx_m = (x - previous_speed.x) * self.calibration.width_m
                 dy_m = (y - previous_speed.y) * self.calibration.height_m
                 speed = math.hypot(dx_m, dy_m) / (now - previous_speed.timestamp)
@@ -956,15 +984,15 @@ class VisionRenderer:
                 detection.zone is None or detection.zone.zone_id != self.selected_zone
             ):
                 continue
-            private = detection.segment_id is None and detection.confirmed
-            color = (120, 120, 120) if private or not detection.confirmed else self._color(detection.track_id)
+            private = detection.zone is not None and detection.zone.is_aggregated_only
+            color = self._color(detection.track_id) if detection.segment_id else (120, 120, 120)
             x1, y1, x2, y2 = detection.box
             self.cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             self.cv2.circle(frame, (int(detection.foot_x), int(detection.foot_y)), 5, color, -1)
             identity = (
                 "Persona · datos agregados" if private
-                else f"Persona {detection.track_number}" if detection.confirmed
-                else "Persona detectada · asignando ID"
+                else f"Persona {detection.track_number}" if detection.segment_id
+                else "Persona detectada · sin ID publicado"
             )
             zone_name = detection.zone.name if detection.zone else "Fuera de zona"
             label = f"{identity} | {zone_name} | {detection.confidence:.0%}"
@@ -1048,28 +1076,26 @@ class VisionRenderer:
                         self.cv2.LINE_AA,
                     )
         for detection in detections:
-            if detection.floor_x is None or detection.floor_y is None:
+            if detection.floor_x is None or detection.floor_y is None or not detection.segment_id:
                 continue
             if not self._track_visible(detection.track_id):
                 continue
             if not self._zone_visible(detection.zone.zone_id if detection.zone else None):
                 continue
             pixel = self._floor_pixel(detection.floor_x, detection.floor_y)
-            private = bool(detection.zone and detection.zone.is_aggregated_only)
-            color = (120, 120, 120) if private or not detection.confirmed else self._color(detection.track_id)
+            color = self._color(detection.track_id)
             self.cv2.circle(canvas, pixel, 7, (255, 255, 255), -1)
             self.cv2.circle(canvas, pixel, 5, color, -1)
-            if not private and detection.confirmed:
-                self.cv2.putText(
-                    canvas,
-                    f"P{detection.track_number}",
-                    (pixel[0] + 8, pixel[1] - 7),
-                    self.cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    color,
-                    1,
-                    self.cv2.LINE_AA,
-                )
+            self.cv2.putText(
+                canvas,
+                f"P{detection.track_number}",
+                (pixel[0] + 8, pixel[1] - 7),
+                self.cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+                self.cv2.LINE_AA,
+            )
         self.cv2.putText(
             canvas,
             "N: siguiente persona | A: todas | Z: zona | R: reiniciar | V: trazo en cámara | Q: salir",
@@ -1089,6 +1115,7 @@ class VisionRenderer:
 
     def break_continuity(self) -> None:
         self._last_speed_position.clear()
+        self.continuity.reset()
 
     def handle_key(self, key: int, zones: list[Zone]) -> bool:
         key &= 0xFF
@@ -1381,7 +1408,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--api", default=os.getenv("VISION_BACKEND_URL", "http://127.0.0.1:8000"), help="backend Factory Pulse")
     parser.add_argument("--device-id", default="cam-overhead-1", help="ID anónimo de la cámara")
-    parser.add_argument("--source", default=os.getenv("FP_CAMERA_SOURCE", "webcam"), help="webcam | índice | MP4 | HTTP | RTSP")
+    parser.add_argument("--source", default=os.getenv("FP_CAMERA_SOURCE", "webcam"), help="webcam | índice | HTTP | RTSP")
     parser.add_argument("--profile", choices=tuple(DETECTION_PROFILES), default="balanced", help="perfil base de detección")
     parser.add_argument("--model", default=None, help="modelo Ultralytics; vacío usa el perfil")
     parser.add_argument("--tracker", default="bytetrack.yaml", help="configuración de tracker Ultralytics")
@@ -1402,6 +1429,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--publish-interval", type=float, default=0.40, help="segundos entre lotes al backend")
     parser.add_argument("--zone-refresh", type=float, default=5.0, help="segundos entre consultas de zonas")
     parser.add_argument("--sample-interval", type=float, default=0.25, help="muestreo del spaghetti")
+    parser.add_argument("--recovery-seconds", type=float, default=DEFAULT_RECOVERY_S, help="ventana de recuperación anónima (0–2 s; 0 la desactiva)")
     parser.add_argument("--min-step", type=float, default=0.003, help="movimiento normalizado mínimo")
     parser.add_argument("--show-camera-trails", action="store_true", help="dibuja spaghetti también en cámara")
     parser.add_argument("--no-display", action="store_true", help="no abre ventanas OpenCV")
@@ -1460,6 +1488,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise SystemExit("los intervalos deben ser mayores que cero")
     if not 1 <= args.jpeg_quality <= 100:
         raise SystemExit("--jpeg-quality debe estar entre 1 y 100")
+    if not 0 <= args.recovery_seconds <= 2.0:
+        raise SystemExit("--recovery-seconds debe estar entre 0 y 2")
 
     if args.calibrate:
         try:
@@ -1502,7 +1532,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     zone_client = ZoneClient(args.api, args.zone_refresh)
     zones = zone_client.refresh_if_due(force=True)
-    prefix = f"{args.device_id}-{uuid.uuid4().hex[:8]}"
+    prefix = uuid.uuid4().hex
+    continuity = TrackingContinuity(args.recovery_seconds)
     tracker = YoloByteTracker(
         args.model,
         args.tracker,
@@ -1514,6 +1545,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     renderer = VisionRenderer(
         calibration,
+        continuity,
+        prefix,
         args.sample_interval,
         args.min_step,
         camera_trails=args.show_camera_trails,
@@ -1533,7 +1566,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     smoothed_fps = 0.0
     last_publish_at = 0.0
     last_geometry = None
-    last_connection = video.delivered_connection
+    last_stream = None
     log("privacidad: IDs temporales; sin reconocimiento facial; el video no se almacena")
     if not args.no_display:
         log("se abren dos ventanas independientes: Cámara y Plano 2D")
@@ -1552,14 +1585,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             geometry = (calibration.revision, zone_client.revision)
             if geometry != last_geometry:
                 renderer.reset_trails()
-                last_geometry = geometry
-            if video.delivered_connection != last_connection:
                 renderer.break_continuity()
-                last_connection = video.delivered_connection
+                last_geometry = geometry
+            stream = (video.delivered_connection, frame.shape[:2])
+            if stream != last_stream:
+                renderer.break_continuity()
+                last_stream = stream
             geometry_ready = calibration.calibrated and zone_client.revision is not None
             geometry_zones = zones if geometry_ready else []
+            policy = calibration_client.trajectory if calibration_client else {"max_gap_s": 2.0, "max_speed_m_s": 4.5}
             if geometry_ready:
-                policy = calibration_client.trajectory if calibration_client else {"max_gap_s": 2.0, "max_speed_m_s": 4.5}
                 renderer.locate(detections, frame.shape, geometry_zones, datetime.fromisoformat(video.delivered_frame_at).timestamp(), **policy)
             elapsed = max(frame_started - previous_frame_at, 1e-6)
             instantaneous_fps = 1.0 / elapsed
@@ -1573,7 +1608,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                 floor,
                 raw=frame,
                 fps=round(smoothed_fps, 1),
-                tracks=sum(1 for item in detections if item.confirmed),
+                tracks=sum(1 for item in detections if item.segment_id),
+                continuity={
+                    "window_s": min(continuity.recovery_s, policy["max_gap_s"]) if geometry_ready and calibration.registration else 0,
+                    "created": continuity.created,
+                    "recovered": continuity.recovered,
+                    "rejected": continuity.rejected,
+                },
                 detections=len(detections),
                 zones=len(geometry_zones),
                 calibrated=calibration.calibrated,

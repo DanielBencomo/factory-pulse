@@ -26,10 +26,11 @@ se migran al historial de piso y no se borran de SQLite. Actualiza y reinicia
 backend, frontend y proveedor juntos.
 
 El identificador de seguimiento y el del tramo son distintos. Perder la
-detección, pasar por una zona sensible o reconectar el video termina el
-tramo aunque el ID de seguimiento vuelva a aparecer. Si entre capturas hay
-más de 2 s o la velocidad implícita excede 4.5 m/s, tampoco se dibuja ni se
-suma el salto. El calor de tránsito cuenta muestras; el de permanencia
+detección, recuperar un ID o reconectar el video termina el tramo. Si entre
+capturas hay más de 2 s o la velocidad implícita excede 4.5 m/s, tampoco se
+dibuja ni se suma el salto. El [criterio de recuperación de IDs](VISION_YOLO_RTSP.md#continuidad-del-tracking)
+no establece quién es la persona ni vincula cámaras. El calor de tránsito
+cuenta muestras; el de permanencia
 acumula el tiempo entre capturas consecutivas válidas, aproximando su
 ubicación al punto medio. La ventana avanza aunque no lleguen datos.
 

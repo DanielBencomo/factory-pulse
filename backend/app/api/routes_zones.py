@@ -11,6 +11,7 @@ from app.cameras.calibration import CalibrationRef, active_revisions, require_pr
 from app.cameras.observations import vision_zones, zone_revision
 from app.models.db_models import DBPolygonZone, DBAuditLog, DBEvent, DBFloorPlan, DBLine, DBStation
 from app.calculations.evidence import count_value, floor_position, zone_counts
+from app.calculations.trajectory import MAX_GAP_S
 from app.ws.manager import ws_manager
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -129,14 +130,14 @@ async def live_zone_occupancy(
 
     revisions = await active_revisions(session)
     layout_revision = zone_revision(zones)
-    tracks: set[str] = set()
+    tracks: Dict[tuple[str, str], datetime] = {}
     snapshots: Dict[tuple[str, str], tuple[datetime, Dict[str, Any]]] = {}
     for at, event_type, payload, device_id in rows:
         payload = payload or {}
         if event_type == "position":
             position = floor_position(payload, device_id, revisions, layout_revision)
-            if position:
-                tracks.add(position[0])
+            if position and (now - at).total_seconds() <= MAX_GAP_S:
+                tracks[(device_id or "unknown", position[0])] = at
         elif isinstance(payload.get("zone_id"), str) and count_value(payload.get("count")) is not None:
             snapshots[(device_id or "unknown", payload["zone_id"])] = (at, payload)
 
@@ -144,9 +145,11 @@ async def live_zone_occupancy(
     sources: Counter[str] = Counter()
     zone_by_source: Dict[tuple[str, str], tuple[datetime, int]] = {}
     totals = []
+    latest_camera_frame: Dict[str, datetime] = {}
     for (source, scope), (at, payload) in snapshots.items():
         if scope == "__plant__":
             totals.append((at, payload["count"]))
+            latest_camera_frame[source] = at
         for zone, count in zone_counts(payload, source, revisions, layout_revision).items():
             key = (source, zone)
             if key not in zone_by_source or at >= zone_by_source[key][0]:
@@ -156,6 +159,7 @@ async def live_zone_occupancy(
         sources[zone] += 1
 
     last_seen = max((at for at, _ in snapshots.values()), default=None)
+    active_ids = {track for (source, track), at in tracks.items() if at >= latest_camera_frame.get(source, at)}
     return {
         "mode": "live",
         "at": now.replace(tzinfo=timezone.utc).isoformat(),
@@ -163,7 +167,7 @@ async def live_zone_occupancy(
         "max_age_seconds": max_age_seconds,
         "total_people": sum(count for _, count in totals) if totals else None,
         "camera_source_count": len(totals),
-        "tracked_people": len(tracks) if tracks else None,
+        "tracked_people": len(active_ids) if active_ids else None,
         "zones": [{
             "zone_id": z.zone_id,
             "name": z.name,

@@ -90,6 +90,7 @@ class LiveProcessor:
             zones = (await session.execute(select(DBPolygonZone))).scalars().all()
             layout_revision = zone_revision(zones)
             positions: Dict[str, List[Tuple[datetime, float, float, str]]] = {}
+            track_sources: Dict[str, str] = {}
             occupancy_bundles: Dict[str, Tuple[datetime, Dict[str, Any]]] = {}
             occupancy_legacy: Dict[Tuple[str, str], Tuple[datetime, Dict[str, Any]]] = {}
             for at, etype, p, _dev in rows:
@@ -98,6 +99,8 @@ class LiveProcessor:
                     if position:
                         track, x, y = position
                         positions.setdefault(track, []).append((at, x, y, p["segment_id"]))
+                        if _dev:
+                            track_sources[track] = _dev
                 elif etype == "zone_occupancy" and now - at <= timedelta(seconds=12):
                     device = _dev or "unknown"
                     if isinstance(p.get("counts"), dict):
@@ -117,8 +120,11 @@ class LiveProcessor:
             for (_, zone), (_, count) in per_source.items():
                 aggregate_counts[zone] = aggregate_counts.get(zone, 0) + count
 
+            latest_camera_frame = {device: at for device, (at, _) in occupancy_bundles.items()}
             live_tracks = {
-                trk: pts[-1] for trk, pts in positions.items() if (now - pts[-1][0]).total_seconds() <= POSITION_MAX_AGE
+                trk: pts[-1] for trk, pts in positions.items()
+                if (now - pts[-1][0]).total_seconds() <= POSITION_MAX_AGE
+                and pts[-1][0] >= latest_camera_frame.get(track_sources.get(trk, ""), pts[-1][0])
             }
             await ws_manager.broadcast({
                 "type": "TRACKS",
